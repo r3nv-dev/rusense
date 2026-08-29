@@ -1,11 +1,13 @@
 //! rusense-core: domain types and ports for RuSense.
 
 pub mod domain;
+pub mod history;
 pub mod mock;
 pub mod port;
 pub mod sysfs;
 
 pub use domain::*;
+pub use history::*;
 pub use mock::*;
 pub use port::*;
 pub use sysfs::*;
