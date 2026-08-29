@@ -1,0 +1,156 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>RuSense</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Rajdhani:wght@500;600;700&family=Saira:wght@400;500&family=Chivo+Mono:wght@400;600&display=swap">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<div class="app">
+  <div class="titlebar">
+    <div class="dots"><i></i><i></i><i></i></div>
+    <div class="brand">Ru<em>Sense</em></div>
+    <div class="spacer"></div>
+    <span class="chip"><span class="dot"></span>linuwu_sense carregado</span>
+    <span class="chip">Acer Nitro ANV15-52</span>
+  </div>
+
+  <div class="shell">
+    <svg width="0" height="0" style="position:absolute">
+      <defs>
+        <linearGradient id="heat" x1="0" y1="0" x2="1" y2="1">
+          <stop offset="0" stop-color="#e8362d"/><stop offset="1" stop-color="#ff8a3d"/>
+        </linearGradient>
+      </defs>
+    </svg>
+
+    <div class="row gauges">
+      <div class="card">
+        <h2>Fan CPU</h2>
+        <div class="gauge-wrap">
+          <div class="gauge">
+            <svg viewBox="0 0 100 100">
+              <circle class="track" cx="50" cy="50" r="44" pathLength="100"/>
+              <circle class="value" id="arc-cpu" cx="50" cy="50" r="44" pathLength="100"/>
+            </svg>
+            <div class="center">
+              <span class="rpm" id="rpm-cpu">0</span>
+              <span class="unit">rpm</span>
+            </div>
+          </div>
+          <div class="gauge-side">
+            <div class="temp"><b id="temp-cpu">—</b><span>temp CPU</span></div>
+            <div class="temp"><b id="temp-sys">—</b><span>sistema</span></div>
+            <div class="src">hwmon/acer/fan1_input · temp1</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="card">
+        <h2>Fan GPU</h2>
+        <div class="gauge-wrap">
+          <div class="gauge">
+            <svg viewBox="0 0 100 100">
+              <circle class="track" cx="50" cy="50" r="44" pathLength="100"/>
+              <circle class="value" id="arc-gpu" cx="50" cy="50" r="44" pathLength="100"/>
+            </svg>
+            <div class="center">
+              <span class="rpm" id="rpm-gpu">0</span>
+              <span class="unit">rpm</span>
+            </div>
+          </div>
+          <div class="gauge-side">
+            <div class="temp"><b id="temp-gpu">—</b><span>temp GPU</span></div>
+            <div class="temp"><b>—</b><span>vram</span></div>
+            <div class="src">hwmon/acer/fan2_input · temp2</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="card profiles-strip">
+      <h2>Perfil térmico</h2>
+      <div class="profiles" id="profiles">
+        <button class="profile" data-v="low-power">Eco<small>economia máxima</small></button>
+        <button class="profile" data-v="quiet">Silencioso<small>fans no mínimo</small></button>
+        <button class="profile" data-v="balanced">Balanceado<small>uso diário</small></button>
+        <button class="profile" data-v="balanced-performance">Performance<small>modo turbo</small></button>
+      </div>
+    </div>
+
+    <div class="row controls">
+      <div class="card" id="card-fans">
+        <h2>Controle de fans</h2>
+        <div class="modes" id="modes">
+          <button class="mode active" data-v="auto">Auto</button>
+          <button class="mode" data-v="max">Máximo</button>
+          <button class="mode" data-v="custom">Custom</button>
+        </div>
+        <div class="slider-row">
+          <label for="s-cpu">CPU</label>
+          <input type="range" id="s-cpu" min="0" max="100" step="10" value="50" disabled>
+          <output id="o-cpu">50%</output>
+        </div>
+        <div class="slider-row">
+          <label for="s-gpu">GPU</label>
+          <input type="range" id="s-gpu" min="0" max="100" step="10" value="50" disabled>
+          <output id="o-gpu">50%</output>
+        </div>
+        <div class="src">nitro_sense/fan_speed · formato "cpu,gpu" · 0,0 = auto</div>
+      </div>
+
+      <div class="card" id="card-energy">
+        <h2>Energia &amp; bateria</h2>
+        <div class="setting">
+          <div class="info">
+            <div class="name">Limite de carga 80%</div>
+            <div class="desc">Preserva a saúde da bateria</div>
+          </div>
+          <button class="toggle" id="t-limiter" aria-label="Limite de carga 80%" aria-pressed="false"></button>
+        </div>
+        <div class="setting">
+          <div class="info">
+            <div class="name">USB charging</div>
+            <div class="desc">Carrega dispositivos desligado, até o nível</div>
+          </div>
+          <div class="segs" id="usb-segs">
+            <button class="seg" data-v="0">off</button>
+            <button class="seg" data-v="10">10%</button>
+            <button class="seg" data-v="20">20%</button>
+            <button class="seg" data-v="30">30%</button>
+          </div>
+        </div>
+        <div class="setting">
+          <div class="info">
+            <div class="name">Timeout do backlight</div>
+            <div class="desc">Apaga o teclado após 30 s ocioso</div>
+          </div>
+          <button class="toggle" id="t-backlight" aria-label="Timeout do backlight" aria-pressed="false"></button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="statusbar">
+    <span>/sys/devices/platform/acer-wmi</span>
+    <span class="sep">|</span>
+    <span>perfil: <span id="st-profile">—</span></span>
+    <span class="sep">|</span>
+    <span>fans: <span id="st-fans">—</span></span>
+    <span class="sep">|</span>
+    <span>bateria: <span id="st-batt">—</span></span>
+    <span class="sep">|</span>
+    <span id="st-rgb">RGB 4 zonas: indisponível neste modelo</span>
+    <span class="badge" id="st-mock" hidden>mock</span>
+  </div>
+</div>
+
+<div id="toast" aria-live="polite"><span class="p">rusense →</span> <span id="toast-msg"></span></div>
+
+<script src="app.js" defer></script>
+</body>
+</html>

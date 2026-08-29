@@ -1,1 +1,3 @@
 /target
+# Schemas gerados pelo tauri-build a partir de gui/capabilities/
+/gui/gen/schemas
