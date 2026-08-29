@@ -1,0 +1,17 @@
+# 99-rusense.rules — RuSense: libera escrita nos controles do driver
+# Linuwu-Sense para o grupo "wheel".
+#
+# Quando o driver carrega (device platform "acer-wmi" aparece), aplica
+# chgrp/chmod nos subdiretórios de controle que existirem neste modelo:
+#   - nitro_sense     (linha Nitro)
+#   - predator_sense  (linha Predator — mesmo layout de atributos)
+#   - platform-profile (perfis low-power/quiet/balanced/...)
+#
+# Sem esta regra instalada, rusense/rusense-gui funcionam em modo SOMENTE
+# LEITURA — o erro "sem permissão de escrita" do app aponta pro install.sh.
+#
+# Instalar:    sudo ./install.sh   (copia pra /etc/udev/rules.d/ e recarrega)
+# Desinstalar: sudo rm /etc/udev/rules.d/99-rusense.rules && sudo udevadm control --reload
+#
+# Nota de escape: em regras udev, "$$" vira "$" literal no comando executado.
+ACTION=="add", SUBSYSTEM=="platform", KERNEL=="acer-wmi", RUN+="/bin/sh -c 'for d in /sys/devices/platform/acer-wmi/nitro_sense /sys/devices/platform/acer-wmi/predator_sense /sys/devices/platform/acer-wmi/platform-profile; do [ -d $$d ] && { chgrp -R wheel $$d; chmod -R g+w $$d; }; done; exit 0'"
