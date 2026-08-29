@@ -15,6 +15,7 @@
 }
 *{box-sizing:border-box}
 [hidden]{display:none!important}
+.svg-defs{position:absolute}
 body{
   margin:0;
   background:var(--bg);

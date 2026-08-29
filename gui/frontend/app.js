@@ -14,6 +14,8 @@
   let current = null;       // último UiState renderizado
   let dragging = false;     // true enquanto um slider de fan está sendo arrastado
   let lastPollError = null; // evita spam de toast quando o poll falha em série
+  let gen = 0;              // carimbo do invoke mais recente emitido
+  let renderedGen = 0;      // carimbo do último UiState renderizado
 
   // ---------- toast (superfície de status/erro) ----------
   let toastTimer;
@@ -41,7 +43,9 @@
       if (!known && b.dataset.extra) { b.remove(); continue; }
       b.hidden = !known;
       if (known) covered.add(b.dataset.v);
-      b.classList.toggle('active', b.dataset.v === p.active);
+      const active = b.dataset.v === p.active;
+      b.classList.toggle('active', active);
+      b.setAttribute('aria-pressed', String(active));
     }
     // Perfis que o driver reporta além dos quatro conhecidos: botão simples.
     for (const name of p.available) {
@@ -50,19 +54,30 @@
       b.className = 'profile';
       b.dataset.v = name;
       b.dataset.extra = '1';
-      b.textContent = name;
-      b.classList.toggle('active', name === p.active);
+      b.append(name);
+      // <small> vazio mantém o grid interno alinhado com os botões estáticos.
+      b.appendChild(document.createElement('small'));
+      const active = name === p.active;
+      b.classList.toggle('active', active);
+      b.setAttribute('aria-pressed', String(active));
       wrap.appendChild(b);
     }
   }
 
   function renderFan(fan) {
     for (const b of document.querySelectorAll('.mode')) {
-      b.classList.toggle('active', b.dataset.v === fan.mode);
+      const on = b.dataset.v === fan.mode;
+      b.classList.toggle('active', on);
+      b.setAttribute('aria-pressed', String(on));
     }
     const custom = fan.mode === 'custom';
     $('#s-cpu').disabled = $('#s-gpu').disabled = !custom;
-    if (!dragging) {
+    // Os sliders são estado LOCAL (default 50) e só sincronizam do backend em
+    // modo custom. Em auto/max o DTO reporta os duties aliased (0,0 / 100,100);
+    // copiá-los pros sliders faria o próximo clique em "Custom" enviar 0,0 —
+    // que FanMode::custom normaliza de volta pra Auto, deixando o modo custom
+    // inalcançável (mesmo padrão do TUI: tui/src/app.rs).
+    if (custom && !dragging) {
       $('#s-cpu').value = fan.cpu; $('#o-cpu').textContent = fan.cpu + '%';
       $('#s-gpu').value = fan.gpu; $('#o-gpu').textContent = fan.gpu + '%';
     }
@@ -75,7 +90,9 @@
       t.setAttribute('aria-pressed', String(on));
     }
     for (const b of document.querySelectorAll('.seg')) {
-      b.classList.toggle('active', +b.dataset.v === p.usb);
+      const on = +b.dataset.v === p.usb;
+      b.classList.toggle('active', on);
+      b.setAttribute('aria-pressed', String(on));
     }
   }
 
@@ -105,15 +122,26 @@
   }
 
   // ---------- bridge ----------
+  // Cada invoke recebe um carimbo de geração; uma resposta que chega depois
+  // de outra mais nova ser renderizada é descartada (poll lento não pode
+  // sobrescrever o UiState devolvido por uma ação, e vice-versa).
+  function commit(g, s) {
+    if (g < renderedGen) return;
+    renderedGen = g;
+    render(s);
+  }
+
   function call(cmd, args, okMsg) {
+    const g = ++gen;
     invoke(cmd, args)
-      .then(s => { render(s); if (okMsg) toast(okMsg); })
+      .then(s => { commit(g, s); if (okMsg) toast(okMsg); })
       .catch(e => { toast(String(e)); refresh(); });
   }
 
   function refresh() {
+    const g = ++gen;
     invoke('state')
-      .then(s => { lastPollError = null; render(s); })
+      .then(s => { lastPollError = null; commit(g, s); })
       .catch(e => {
         const msg = String(e);
         if (msg !== lastPollError) toast(msg);

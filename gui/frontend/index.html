@@ -16,11 +16,11 @@
     <div class="brand">Ru<em>Sense</em></div>
     <div class="spacer"></div>
     <span class="chip"><span class="dot"></span>linuwu_sense carregado</span>
-    <span class="chip">Acer Nitro ANV15-52</span>
+    <span class="chip">Acer Nitro</span>
   </div>
 
   <div class="shell">
-    <svg width="0" height="0" style="position:absolute">
+    <svg width="0" height="0" class="svg-defs">
       <defs>
         <linearGradient id="heat" x1="0" y1="0" x2="1" y2="1">
           <stop offset="0" stop-color="#e8362d"/><stop offset="1" stop-color="#ff8a3d"/>
@@ -75,10 +75,10 @@
     <div class="card profiles-strip">
       <h2>Perfil térmico</h2>
       <div class="profiles" id="profiles">
-        <button class="profile" data-v="low-power">Eco<small>economia máxima</small></button>
-        <button class="profile" data-v="quiet">Silencioso<small>fans no mínimo</small></button>
-        <button class="profile" data-v="balanced">Balanceado<small>uso diário</small></button>
-        <button class="profile" data-v="balanced-performance">Performance<small>modo turbo</small></button>
+        <button class="profile" data-v="low-power" aria-pressed="false">Eco<small>economia máxima</small></button>
+        <button class="profile" data-v="quiet" aria-pressed="false">Silencioso<small>fans no mínimo</small></button>
+        <button class="profile" data-v="balanced" aria-pressed="false">Balanceado<small>uso diário</small></button>
+        <button class="profile" data-v="balanced-performance" aria-pressed="false">Performance<small>modo turbo</small></button>
       </div>
     </div>
 
@@ -86,9 +86,9 @@
       <div class="card" id="card-fans">
         <h2>Controle de fans</h2>
         <div class="modes" id="modes">
-          <button class="mode active" data-v="auto">Auto</button>
-          <button class="mode" data-v="max">Máximo</button>
-          <button class="mode" data-v="custom">Custom</button>
+          <button class="mode active" data-v="auto" aria-pressed="true">Auto</button>
+          <button class="mode" data-v="max" aria-pressed="false">Máximo</button>
+          <button class="mode" data-v="custom" aria-pressed="false">Custom</button>
         </div>
         <div class="slider-row">
           <label for="s-cpu">CPU</label>
@@ -118,10 +118,10 @@
             <div class="desc">Carrega dispositivos desligado, até o nível</div>
           </div>
           <div class="segs" id="usb-segs">
-            <button class="seg" data-v="0">off</button>
-            <button class="seg" data-v="10">10%</button>
-            <button class="seg" data-v="20">20%</button>
-            <button class="seg" data-v="30">30%</button>
+            <button class="seg" data-v="0" aria-pressed="false">off</button>
+            <button class="seg" data-v="10" aria-pressed="false">10%</button>
+            <button class="seg" data-v="20" aria-pressed="false">20%</button>
+            <button class="seg" data-v="30" aria-pressed="false">30%</button>
           </div>
         </div>
         <div class="setting">

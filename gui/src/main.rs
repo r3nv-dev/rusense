@@ -22,28 +22,33 @@ struct AppState {
 }
 
 impl AppState {
-    /// Lock the port. A poisoned mutex means a command panicked mid-write;
-    /// there is no state to salvage, so panic with a PT-BR message.
+    /// Lock the port. A poisoned mutex only means a command panicked while
+    /// holding the lock; the port itself is just an I/O handle and stays
+    /// usable, so recover the guard instead of propagating the panic.
     fn port(&self) -> std::sync::MutexGuard<'_, Box<dyn SensePort + Send>> {
-        self.port.lock().expect("estado interno corrompido (mutex)")
+        self.port.lock().unwrap_or_else(|p| p.into_inner())
     }
 }
 
+// Commands are `async` so they run on Tauri's async pool instead of the main
+// (UI) thread — sysfs reads/writes never stall the webview. No guard is held
+// across an `.await` (there are none).
+
 #[tauri::command]
-fn state(app: tauri::State<'_, AppState>) -> Result<UiState, String> {
+async fn state(app: tauri::State<'_, AppState>) -> Result<UiState, String> {
     let port = app.port();
     state::read_state(&**port, app.mock)
 }
 
 #[tauri::command]
-fn set_profile(name: String, app: tauri::State<'_, AppState>) -> Result<UiState, String> {
+async fn set_profile(name: String, app: tauri::State<'_, AppState>) -> Result<UiState, String> {
     let mut port = app.port();
     state::apply_profile(&mut **port, &name)?;
     state::read_state(&**port, app.mock)
 }
 
 #[tauri::command]
-fn set_fan(
+async fn set_fan(
     mode: String,
     cpu: u8,
     gpu: u8,
@@ -55,7 +60,7 @@ fn set_fan(
 }
 
 #[tauri::command]
-fn set_power(
+async fn set_power(
     limiter: bool,
     usb: u8,
     backlight: bool,
