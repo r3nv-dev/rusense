@@ -8,6 +8,20 @@ const HISTORY_CAPACITY: usize = 60;
 /// Slider step for the custom fan duties, in percent.
 const SLIDER_STEP: u8 = 10;
 
+/// Where the error shown in the footer came from.
+///
+/// Tick errors are transient — the next fully successful refresh clears
+/// them. Action errors carry actionable hints (e.g. ReadOnly's "rode o
+/// install.sh") and must survive healthy ticks: only the next
+/// successful user action clears them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ErrorOrigin {
+    /// Set by the periodic background refresh (`on_tick`).
+    Tick,
+    /// Set by a user-triggered write.
+    Action,
+}
+
 /// All mutable UI state. Writes go exclusively through `port`.
 pub struct App {
     port: Box<dyn SensePort + Send>,
@@ -23,8 +37,9 @@ pub struct App {
     pub custom_gpu: u8,
     /// Which slider ←/→ adjusts; toggled with Tab.
     pub focus_gpu: bool,
-    /// Display text of the last `SenseError`, shown in the status bar.
-    pub last_error: Option<String>,
+    /// Origin and display text of the last `SenseError`, shown in the
+    /// status bar. See [`ErrorOrigin`] for the clearing rules.
+    pub last_error: Option<(ErrorOrigin, String)>,
     /// True when running against the mock backend (`--mock`); the
     /// header shows "mock" instead of "driver ok".
     pub mock: bool,
@@ -57,20 +72,40 @@ impl App {
     /// Periodic refresh: push one telemetry sample and re-read the
     /// controls (the driver is the source of truth — another tool may
     /// have changed them). Errors land in `last_error`, old data stays;
-    /// a fully successful refresh clears a stale transient error.
+    /// a fully successful refresh clears a stale tick error but never a
+    /// standing action error.
     pub fn on_tick(&mut self) {
         let mut ok = true;
         match self.port.telemetry() {
             Ok(t) => self.history.push(t),
             Err(e) => {
-                self.last_error = Some(e.to_string());
+                self.set_tick_error(e.to_string());
                 ok = false;
             }
         }
         ok &= self.refresh_controls();
-        if ok {
+        if ok && !self.has_action_error() {
             self.last_error = None;
         }
+    }
+
+    fn has_action_error(&self) -> bool {
+        matches!(self.last_error, Some((ErrorOrigin::Action, _)))
+    }
+
+    /// Record a background-refresh error — without clobbering a
+    /// standing action error, whose hint is more actionable than a
+    /// read hiccup.
+    fn set_tick_error(&mut self, msg: String) {
+        if !self.has_action_error() {
+            self.last_error = Some((ErrorOrigin::Tick, msg));
+        }
+    }
+
+    /// Record a user-action error; it persists until the next
+    /// successful action.
+    fn set_action_error(&mut self, msg: String) {
+        self.last_error = Some((ErrorOrigin::Action, msg));
     }
 
     /// Handle one key press. `q`/`Esc` (quit) are the caller's job.
@@ -107,7 +142,7 @@ impl App {
         match self.port.profiles() {
             Ok(p) => self.profiles = Some(p),
             Err(e) => {
-                self.last_error = Some(e.to_string());
+                self.set_tick_error(e.to_string());
                 ok = false;
             }
         }
@@ -122,7 +157,7 @@ impl App {
                     }
                 }
                 Err(e) => {
-                    self.last_error = Some(e.to_string());
+                    self.set_tick_error(e.to_string());
                     ok = false;
                 }
             }
@@ -131,7 +166,7 @@ impl App {
             match self.port.power() {
                 Ok(s) => self.power = Some(s),
                 Err(e) => {
-                    self.last_error = Some(e.to_string());
+                    self.set_tick_error(e.to_string());
                     ok = false;
                 }
             }
@@ -157,7 +192,7 @@ impl App {
                 }
                 self.last_error = None;
             }
-            Err(e) => self.last_error = Some(e.to_string()),
+            Err(e) => self.set_action_error(e.to_string()),
         }
     }
 
@@ -167,7 +202,7 @@ impl App {
                 self.fan = mode;
                 self.last_error = None;
             }
-            Err(e) => self.last_error = Some(e.to_string()),
+            Err(e) => self.set_action_error(e.to_string()),
         }
     }
 
@@ -176,7 +211,7 @@ impl App {
     fn apply_custom_fan(&mut self) {
         match (FanDuty::new(self.custom_cpu), FanDuty::new(self.custom_gpu)) {
             (Ok(cpu), Ok(gpu)) => self.apply_fan(FanMode::custom(cpu, gpu)),
-            (Err(e), _) | (_, Err(e)) => self.last_error = Some(e.to_string()),
+            (Err(e), _) | (_, Err(e)) => self.set_action_error(e.to_string()),
         }
     }
 
@@ -212,7 +247,7 @@ impl App {
                 self.last_error = None;
             }
             Err(e) => {
-                self.last_error = Some(e.to_string());
+                self.set_action_error(e.to_string());
                 if let Ok(current) = self.port.power() {
                     self.power = Some(current);
                 }
@@ -265,8 +300,8 @@ mod tests {
         fail: Arc<Mutex<Failures>>,
     }
 
-    fn sim_error() -> SenseError {
-        SenseError::Io("falha simulada".into())
+    fn sim_error(op: &str) -> SenseError {
+        SenseError::Io(format!("falha simulada: {op}"))
     }
 
     impl FailingPort {
@@ -281,37 +316,37 @@ mod tests {
         }
         fn telemetry(&self) -> Result<Telemetry, SenseError> {
             if self.fails(|f| f.telemetry) {
-                return Err(sim_error());
+                return Err(sim_error("telemetry"));
             }
             self.inner.telemetry()
         }
         fn profiles(&self) -> Result<ProfileSet, SenseError> {
             if self.fails(|f| f.profiles) {
-                return Err(sim_error());
+                return Err(sim_error("profiles"));
             }
             self.inner.profiles()
         }
         fn set_profile(&mut self, p: &Profile) -> Result<(), SenseError> {
             if self.fails(|f| f.set_profile) {
-                return Err(sim_error());
+                return Err(sim_error("set_profile"));
             }
             self.inner.set_profile(p)
         }
         fn fan_mode(&self) -> Result<FanMode, SenseError> {
             if self.fails(|f| f.fan_mode) {
-                return Err(sim_error());
+                return Err(sim_error("fan_mode"));
             }
             self.inner.fan_mode()
         }
         fn set_fan_mode(&mut self, m: FanMode) -> Result<(), SenseError> {
             if self.fails(|f| f.set_fan_mode) {
-                return Err(sim_error());
+                return Err(sim_error("set_fan_mode"));
             }
             self.inner.set_fan_mode(m)
         }
         fn power(&self) -> Result<PowerSettings, SenseError> {
             if self.fails(|f| f.power) {
-                return Err(sim_error());
+                return Err(sim_error("power"));
             }
             self.inner.power()
         }
@@ -320,7 +355,7 @@ mod tests {
                 // Honor the port contract: earlier fields may already be
                 // applied when the write fails — apply, then fail.
                 self.inner.set_power(s)?;
-                return Err(sim_error());
+                return Err(sim_error("set_power"));
             }
             self.inner.set_power(s)
         }
@@ -582,6 +617,46 @@ mod tests {
         // surfaced, while the ungated profile read kept refreshing.
         assert!(app.last_error.is_none());
         assert!(app.profiles.is_some());
+    }
+
+    #[test]
+    fn action_error_persists_across_successful_ticks() {
+        let (mut app, fail) = failing_app(full_caps());
+        fail.lock().unwrap().set_fan_mode = true;
+        app.on_key(KeyCode::Char('m'));
+        assert!(app.last_error.is_some());
+        fail.lock().unwrap().set_fan_mode = false;
+        app.on_tick();
+        app.on_tick();
+        // Healthy ticks must not erase an actionable write error
+        // (e.g. ReadOnly's install.sh hint).
+        assert!(matches!(app.last_error, Some((ErrorOrigin::Action, _))));
+    }
+
+    #[test]
+    fn action_error_clears_on_next_successful_action() {
+        let (mut app, fail) = failing_app(full_caps());
+        fail.lock().unwrap().set_fan_mode = true;
+        app.on_key(KeyCode::Char('m'));
+        assert!(app.last_error.is_some());
+        fail.lock().unwrap().set_fan_mode = false;
+        app.on_key(KeyCode::Char('a'));
+        assert!(app.last_error.is_none());
+    }
+
+    #[test]
+    fn tick_error_does_not_overwrite_action_error() {
+        let (mut app, fail) = failing_app(full_caps());
+        {
+            let mut f = fail.lock().unwrap();
+            f.set_fan_mode = true;
+            f.telemetry = true;
+        }
+        app.on_key(KeyCode::Char('m'));
+        app.on_tick(); // Failing tick while an action error stands.
+        let (origin, msg) = app.last_error.clone().expect("erro presente");
+        assert_eq!(origin, ErrorOrigin::Action);
+        assert!(msg.contains("set_fan_mode"), "mensagem errada: {msg}");
     }
 
     // --- unmapped keys ---

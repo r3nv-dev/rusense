@@ -3,15 +3,23 @@
 
 use rusense_core::Telemetry;
 
-/// Escape `"` and `\` for embedding in a JSON string literal — the only
-/// JSON-breaking characters a sysfs battery status can carry.
+/// Escape `"`, `\` and control characters for embedding in a JSON
+/// string literal.
 fn escape_json(s: &str) -> String {
+    use std::fmt::Write;
+
     let mut out = String::with_capacity(s.len());
     for c in s.chars() {
-        if c == '"' || c == '\\' {
-            out.push('\\');
+        match c {
+            '"' | '\\' => {
+                out.push('\\');
+                out.push(c);
+            }
+            c if c.is_control() => {
+                let _ = write!(out, "\\u{:04x}", c as u32);
+            }
+            c => out.push(c),
         }
-        out.push(c);
     }
     out
 }
@@ -68,5 +76,10 @@ mod tests {
     fn escape_json_escapes_quotes_and_backslashes() {
         assert_eq!(escape_json("a\"b\\c"), "a\\\"b\\\\c");
         assert_eq!(escape_json("Not charging"), "Not charging");
+    }
+
+    #[test]
+    fn escape_json_escapes_control_characters() {
+        assert_eq!(escape_json("a\nb\tc"), "a\\u000ab\\u0009c");
     }
 }

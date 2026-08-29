@@ -139,10 +139,13 @@ impl UsbChargeLevel {
     /// The next level in the `0 → 10 → 20 → 30 → 0` cycle.
     #[must_use]
     pub fn next(self) -> Self {
-        match self.0 {
-            30 => Self(0),
-            v => Self(v + 10),
-        }
+        Self(match self.0 {
+            0 => 10,
+            10 => 20,
+            20 => 30,
+            // The constructor admits only 0/10/20/30: the 30 → 0 wrap.
+            _ => 0,
+        })
     }
 }
 

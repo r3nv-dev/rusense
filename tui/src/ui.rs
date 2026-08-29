@@ -52,12 +52,14 @@ pub fn render(frame: &mut Frame, app: &App) {
 }
 
 /// Footer height: one hint line, or enough lines (capped at 3) to wrap
-/// the current error message at `width` columns.
+/// the current error message at `width` columns. One line of slack on
+/// top of the char-count estimate, because `Wrap` breaks at word
+/// boundaries and can need more lines than `chars / width` predicts.
 fn footer_height(app: &App, width: u16) -> u16 {
     match &app.last_error {
-        Some(msg) if width > 0 => {
+        Some((_, msg)) if width > 0 => {
             let lines = msg.chars().count().div_ceil(usize::from(width));
-            u16::try_from(lines.clamp(1, 3)).expect("1..=3 cabe em u16")
+            u16::try_from((lines + 1).clamp(2, 3)).expect("2..=3 cabe em u16")
         }
         _ => 1,
     }
@@ -233,7 +235,7 @@ fn render_power(frame: &mut Frame, app: &App, area: Rect) {
 /// Keybinding summary, replaced by the last error (verbatim, red).
 fn render_footer(frame: &mut Frame, app: &App, area: Rect) {
     let line = match &app.last_error {
-        Some(msg) => Line::from(Span::raw(msg.as_str()).fg(Color::Red).bold()),
+        Some((_, msg)) => Line::from(Span::raw(msg.as_str()).fg(Color::Red).bold()),
         None => {
             let mut hints: Vec<String> = Vec::new();
             if let Some(set) = &app.profiles {
@@ -266,7 +268,7 @@ mod tests {
     };
 
     use super::*;
-    use crate::app::App;
+    use crate::app::{App, ErrorOrigin};
 
     /// Render `app` at the given size and return the buffer as plain text.
     fn render_sized(app: &App, width: u16, height: u16) -> String {
@@ -312,7 +314,10 @@ mod tests {
     #[test]
     fn error_replaces_footer_hints() {
         let mut app = App::new(connect(true).unwrap(), true);
-        app.last_error = Some("sem permissão de escrita — rode o install.sh (regra udev)".into());
+        app.last_error = Some((
+            ErrorOrigin::Action,
+            "sem permissão de escrita — rode o install.sh (regra udev)".into(),
+        ));
         let text = render_to_text(&app);
         assert!(text.contains("sem permissão de escrita"));
         assert!(!text.contains("q sai"));
@@ -378,11 +383,27 @@ mod tests {
     #[test]
     fn long_error_wraps_in_footer() {
         let mut app = App::new(connect(true).unwrap(), true);
-        app.last_error = Some("sem permissão de escrita — rode o install.sh (regra udev)".into());
+        app.last_error = Some((
+            ErrorOrigin::Action,
+            "sem permissão de escrita — rode o install.sh (regra udev)".into(),
+        ));
         let text = render_sized(&app, 46, 24);
         // Wider than 46 columns: without wrapping the tail is truncated.
         assert!(text.contains("sem permissão"));
         assert!(text.contains("udev"));
+    }
+
+    #[test]
+    fn footer_wrap_gets_slack_for_word_breaks() {
+        let mut app = App::new(connect(true).unwrap(), true);
+        // 39 chars → 2 lines by char count, but word wrap at 20
+        // columns needs 3; the slack line keeps the tail visible.
+        app.last_error = Some((
+            ErrorOrigin::Action,
+            "desconfiguração inesperada reencontrada".into(),
+        ));
+        let text = render_sized(&app, 20, 24);
+        assert!(text.contains("reencontrada"));
     }
 
     /// Mock wrapper reporting a single platform profile.
