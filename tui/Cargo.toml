@@ -1,0 +1,13 @@
+[package]
+name = "rusense-tui"
+version = "0.1.0"
+edition = "2021"
+license = "GPL-3.0-only"
+
+[[bin]]
+name = "rusense"
+path = "src/main.rs"
+
+[dependencies]
+rusense-core = { path = "../core" }
+ratatui = "0.30"
