@@ -1,0 +1,9 @@
+[Unit]
+Description=RuSense — checagem periódica da bateria
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=2min
+
+[Install]
+WantedBy=timers.target

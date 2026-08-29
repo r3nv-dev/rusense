@@ -71,7 +71,7 @@ rusense --mock   # backend simulado, roda em qualquer máquina
 | `1`–`9` | Seleciona perfil térmico |
 | `a` / `m` / `c` | Fans: auto / max / custom |
 | `Tab` | Alterna foco entre slider CPU e GPU (modo custom) |
-| `←` / `→` | Ajusta o slider focado |
+| `←` / `→` | Ajusta o slider focado (fora do modo custom, o primeiro toque já engaja o custom) |
 | `b` | Liga/desliga limite de carga 80% |
 | `u` | Cicla USB charging (0 → 10 → 20 → 30) |
 | `k` | Liga/desliga timeout do backlight |
@@ -92,6 +92,19 @@ Exemplo de módulo custom no waybar (assume `rusense` no PATH via `cargo install
     "interval": 5
 }
 ```
+
+### Alerta de bateria baixa (opcional)
+
+Um timer systemd de usuário notifica (uma vez por descida) quando a bateria fica abaixo de 20% descarregando — funciona mesmo sem TUI/GUI abertos:
+
+```sh
+cp dist/rusense-battery-alert.sh ~/.local/bin/rusense-battery-alert
+cp dist/systemd/rusense-battery-alert.{service,timer} ~/.config/systemd/user/
+systemctl --user daemon-reload
+systemctl --user enable --now rusense-battery-alert.timer
+```
+
+Limiar configurável via `RUSENSE_BATTERY_THRESHOLD` (padrão 20). Requer `notify-send`.
 
 ### GUI (`rusense-gui`)
 

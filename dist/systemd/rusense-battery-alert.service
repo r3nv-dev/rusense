@@ -1,0 +1,6 @@
+[Unit]
+Description=RuSense — alerta de bateria baixa
+
+[Service]
+Type=oneshot
+ExecStart=%h/.local/bin/rusense-battery-alert

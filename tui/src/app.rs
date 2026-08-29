@@ -230,9 +230,15 @@ impl App {
         }
     }
 
-    /// Move the focused slider one step; while in custom mode the new
-    /// duties are applied immediately.
+    /// Move the focused slider one step and apply. Outside custom mode
+    /// the first arrow press engages Custom at the current slider
+    /// positions instead of adjusting — a shortcut equivalent to `c`,
+    /// so the sliders are always live when the user reaches for them.
     fn adjust_slider(&mut self, up: bool) {
+        if !matches!(self.fan, FanMode::Custom { .. }) {
+            self.enter_custom_fan();
+            return;
+        }
         let slider = if self.focus_gpu {
             &mut self.custom_gpu
         } else {
@@ -243,9 +249,7 @@ impl App {
         } else {
             slider.saturating_sub(SLIDER_STEP)
         };
-        if matches!(self.fan, FanMode::Custom { .. }) {
-            self.apply_custom_fan();
-        }
+        self.apply_custom_fan();
     }
 
     /// Apply `change` to a copy of the current power settings and write it.
@@ -481,15 +485,16 @@ mod tests {
     }
 
     #[test]
-    fn arrows_adjust_focused_slider_without_applying_outside_custom() {
+    fn first_arrow_outside_custom_engages_custom_at_current_sliders() {
         let mut app = mock_app();
+        // From Auto the first press engages Custom (like `c`), without
+        // moving the slider yet.
         app.on_key(KeyCode::Right);
-        assert_eq!(app.custom_cpu, 60);
-        app.on_key(KeyCode::Tab);
-        app.on_key(KeyCode::Left);
-        assert_eq!(app.custom_gpu, 40);
-        // Mode stayed Auto: nothing was applied.
-        assert_eq!(app.port.fan_mode().unwrap(), FanMode::Auto);
+        assert_eq!(app.port.fan_mode().unwrap(), custom(50, 50));
+        assert_eq!((app.custom_cpu, app.custom_gpu), (50, 50));
+        // Now in Custom, the next press adjusts and applies.
+        app.on_key(KeyCode::Right);
+        assert_eq!(app.port.fan_mode().unwrap(), custom(60, 50));
     }
 
     #[test]
@@ -506,8 +511,9 @@ mod tests {
     #[test]
     fn c_from_aliased_slider_extremes_reenters_custom_at_50_50() {
         let mut app = mock_app();
-        // Both sliders down to the aliased 0,0 (mode stays Auto: outside
-        // custom mode arrows don't apply).
+        // Walk both sliders down to 0 inside custom mode; the final
+        // apply of (0,0) normalizes to Auto (FanMode::custom contract).
+        app.on_key(KeyCode::Char('c'));
         for _ in 0..5 {
             app.on_key(KeyCode::Left);
         }
@@ -516,6 +522,7 @@ mod tests {
             app.on_key(KeyCode::Left);
         }
         assert_eq!((app.custom_cpu, app.custom_gpu), (0, 0));
+        assert_eq!(app.port.fan_mode().unwrap(), FanMode::Auto);
 
         // `c` must engage Custom for real, not send the Auto alias.
         app.on_key(KeyCode::Char('c'));
