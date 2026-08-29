@@ -66,15 +66,18 @@ impl FanMode {
         }
     }
 
+    /// Parse the driver's `fan_speed` pair. Any invalid content — including
+    /// out-of-range duties — maps to [`SenseError::Malformed`]: the driver
+    /// is at fault here, not user input (unlike [`FanDuty::new`]).
     pub fn from_sysfs(raw: &str) -> Result<Self, SenseError> {
         let trimmed = raw.trim();
         let malformed = || SenseError::Malformed(format!("fan_speed: {trimmed}"));
         let (cpu, gpu) = trimmed.split_once(',').ok_or_else(malformed)?;
-        let parse = |s: &str| s.trim().parse::<u8>().map_err(|_| malformed());
-        Ok(Self::custom(
-            FanDuty::new(parse(cpu)?)?,
-            FanDuty::new(parse(gpu)?)?,
-        ))
+        let parse = |s: &str| {
+            let v = s.trim().parse::<u8>().map_err(|_| malformed())?;
+            FanDuty::new(v).map_err(|_| malformed())
+        };
+        Ok(Self::custom(parse(cpu)?, parse(gpu)?))
     }
 }
 
@@ -236,9 +239,11 @@ mod tests {
 
     #[test]
     fn fan_mode_from_sysfs_rejects_out_of_range_duty() {
+        // Driver content out of range is the driver's fault: Malformed,
+        // never InvalidDuty (that one is for direct user construction).
         assert_eq!(
             FanMode::from_sysfs("150,50").unwrap_err(),
-            SenseError::InvalidDuty(150)
+            SenseError::Malformed("fan_speed: 150,50".into())
         );
     }
 

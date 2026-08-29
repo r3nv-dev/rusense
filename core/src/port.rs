@@ -61,6 +61,10 @@ pub trait SensePort {
 
     /// Apply power-related toggles.
     ///
+    /// Writes are applied in order (limiter, usb, backlight); on error,
+    /// earlier fields may already have been applied — frontends should
+    /// re-read [`power`](Self::power) after a failure.
+    ///
     /// # Errors
     /// [`SenseError::ReadOnly`] when lacking write permission;
     /// [`SenseError::Io`] on other write failure.

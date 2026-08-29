@@ -17,12 +17,13 @@ const POWER_SUPPLY: &str = "/sys/class/power_supply";
 
 /// Adapter that talks to the linuwu_sense driver through sysfs.
 ///
-/// Capabilities and the `hwmon` directory (the entry under `hwmon/` whose
-/// `name` file reads `acer`) are resolved once at construction. When that
-/// hwmon entry is absent, [`telemetry`] degrades gracefully: fan RPMs read
-/// as 0 and temperatures as `[0.0; 3]` instead of erroring — mirroring the
-/// "hide what doesn't exist" capability policy. Likewise, when no `BAT*`
-/// entry exists under the power-supply base, battery reads as 0% /
+/// Capabilities are probed once at construction. The acer `hwmon` entry
+/// (the one under `hwmon/` whose `name` file reads `acer`) and the battery
+/// are re-discovered on every read. Missing pieces degrade gracefully in
+/// [`telemetry`] instead of erroring — mirroring the "hide what doesn't
+/// exist" capability policy: without an acer hwmon, fan RPMs read as 0 and
+/// temperatures as `[0.0; 3]`; without a `BAT*` entry under the
+/// power-supply base (or when it vanishes mid-read), battery reads as 0% /
 /// `"Unknown"` so desktops without battery still show fans.
 ///
 /// [`telemetry`]: SensePort::telemetry
@@ -31,7 +32,6 @@ pub struct SysfsSense {
     base: PathBuf,
     power_supply: PathBuf,
     caps: Capabilities,
-    hwmon: Option<PathBuf>,
 }
 
 /// Read a sysfs file, trimming surrounding whitespace/newlines.
@@ -39,6 +39,16 @@ fn read_trimmed(path: &Path) -> Result<String, SenseError> {
     fs::read_to_string(path)
         .map(|s| s.trim().to_string())
         .map_err(|e| SenseError::Io(format!("{}: {e}", path.display())))
+}
+
+/// Like [`read_trimmed`], but a vanished file yields `None` instead of an
+/// error (TOCTOU: the device was discovered, then removed before the read).
+fn read_if_present(path: &Path) -> Result<Option<String>, SenseError> {
+    match fs::read_to_string(path) {
+        Ok(s) => Ok(Some(s.trim().to_string())),
+        Err(e) if e.kind() == ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(SenseError::Io(format!("{}: {e}", path.display()))),
+    }
 }
 
 /// Write a sysfs value, mapping permission failures to [`SenseError::ReadOnly`].
@@ -102,27 +112,32 @@ fn find_battery(dir: &Path) -> Option<PathBuf> {
 
 impl SysfsSense {
     /// Open the driver tree at `base`, discovering batteries under
-    /// `power_supply`. Probes capabilities and resolves the acer hwmon
-    /// directory here.
+    /// `power_supply`. Probes capabilities here.
     ///
     /// # Errors
-    /// [`SenseError::DriverMissing`] when `base` does not exist.
+    /// [`SenseError::DriverMissing`] when `base` does not exist, or exists
+    /// without a `nitro_sense`/`predator_sense` attribute group — stock
+    /// acer-wmi creates the same platform dir, and those users need the
+    /// install hint, not zeroed capabilities.
     pub fn new(base: PathBuf, power_supply: PathBuf) -> Result<Self, SenseError> {
         if !base.is_dir() {
             return Err(SenseError::DriverMissing(base.display().to_string()));
         }
         let nitro = base.join("nitro_sense");
+        if !nitro.is_dir() && !base.join("predator_sense").is_dir() {
+            return Err(SenseError::DriverMissing(base.display().to_string()));
+        }
         let caps = Capabilities {
             fan_control: nitro.join("fan_speed").is_file(),
+            // battery_limiter stands in for the whole nitro_sense attribute
+            // group — the driver creates the group atomically.
             power: nitro.join("battery_limiter").is_file(),
             four_zone_kb: base.join("four_zoned_kb").is_dir(),
         };
-        let hwmon = find_hwmon(&base.join("hwmon"));
         Ok(Self {
             base,
             power_supply,
             caps,
-            hwmon,
         })
     }
 
@@ -139,21 +154,33 @@ impl SysfsSense {
         self.base.join("nitro_sense").join(file)
     }
 
-    fn profile_dir(&self) -> PathBuf {
-        self.base
-            .join("platform-profile")
-            .join("platform-profile-0")
+    /// The single `platform-profile/platform-profile-N` entry. `N` comes
+    /// from a kernel-global IDA, so it depends on registration order
+    /// (amd-pmf etc. may claim 0 first) — discovered, never hardcoded.
+    fn profile_dir(&self) -> Result<PathBuf, SenseError> {
+        let dir = self.base.join("platform-profile");
+        fs::read_dir(&dir)
+            .map_err(|e| SenseError::Io(format!("{}: {e}", dir.display())))?
+            .flatten()
+            .map(|e| e.path())
+            .find(|p| p.is_dir())
+            .ok_or_else(|| SenseError::Io(format!("{}: sem entradas", dir.display())))
     }
 
     /// Battery percent and status, defaulting to `(0, "Unknown")` when no
-    /// `BAT*` entry exists.
+    /// `BAT*` entry exists — or when it vanishes between discovery and read.
     fn battery(&self) -> Result<(u8, String), SenseError> {
+        let absent = || (0, "Unknown".to_string());
         let Some(bat) = find_battery(&self.power_supply) else {
-            return Ok((0, "Unknown".to_string()));
+            return Ok(absent());
         };
-        let raw = read_trimmed(&bat.join("capacity"))?;
+        let Some(raw) = read_if_present(&bat.join("capacity"))? else {
+            return Ok(absent());
+        };
         let pct = raw.parse().map_err(|_| malformed("capacity", &raw))?;
-        let status = read_trimmed(&bat.join("status"))?;
+        let Some(status) = read_if_present(&bat.join("status"))? else {
+            return Ok(absent());
+        };
         Ok((pct, status))
     }
 }
@@ -164,7 +191,7 @@ impl SensePort for SysfsSense {
     }
 
     fn telemetry(&self) -> Result<Telemetry, SenseError> {
-        let (fan_cpu_rpm, fan_gpu_rpm, temps) = match &self.hwmon {
+        let (fan_cpu_rpm, fan_gpu_rpm, temps) = match find_hwmon(&self.base.join("hwmon")) {
             Some(hw) => {
                 let rpm = |file: &str| parse_u32(&read_trimmed(&hw.join(file))?, file);
                 let temp = |file: &str| parse_millideg(&read_trimmed(&hw.join(file))?, file);
@@ -191,14 +218,14 @@ impl SensePort for SysfsSense {
     }
 
     fn profiles(&self) -> Result<ProfileSet, SenseError> {
-        let dir = self.profile_dir();
+        let dir = self.profile_dir()?;
         let choices = read_trimmed(&dir.join("choices"))?;
         let active = read_trimmed(&dir.join("profile"))?;
         ProfileSet::parse(&choices, &active)
     }
 
     fn set_profile(&mut self, p: &Profile) -> Result<(), SenseError> {
-        let dir = self.profile_dir();
+        let dir = self.profile_dir()?;
         let choices = read_trimmed(&dir.join("choices"))?;
         if !choices.split_whitespace().any(|c| c == p.as_str()) {
             return Err(SenseError::UnknownProfile(p.as_str().to_string()));
@@ -417,8 +444,9 @@ mod tests {
     #[test]
     fn missing_hwmon_reports_zeros() {
         let (_tmp, base, power) = fake_sysfs();
+        let sense = SysfsSense::new(base.clone(), power).unwrap();
+        // Removed after construction: hwmon resolution happens per call.
         fs::remove_dir_all(base.join("hwmon")).unwrap();
-        let sense = SysfsSense::new(base, power).unwrap();
         let t = sense.telemetry().unwrap();
         assert_eq!(t.fan_cpu_rpm, 0);
         assert_eq!(t.fan_gpu_rpm, 0);
@@ -426,5 +454,113 @@ mod tests {
         // Battery still reports.
         assert_eq!(t.battery_pct, 80);
         assert_eq!(t.battery_status, "Not charging");
+    }
+
+    #[test]
+    fn battery_vanishing_mid_read_defaults() {
+        let (_tmp, base, power) = fake_sysfs();
+        // TOCTOU: BAT1 is discovered but its files vanish before the read.
+        fs::remove_file(power.join("BAT1/capacity")).unwrap();
+        let sense = SysfsSense::new(base, power).unwrap();
+        let t = sense.telemetry().unwrap();
+        assert_eq!(t.battery_pct, 0);
+        assert_eq!(t.battery_status, "Unknown");
+        assert_eq!(t.fan_cpu_rpm, 2348);
+    }
+
+    #[test]
+    fn profile_dir_index_is_discovered_not_hardcoded() {
+        // The platform-profile index comes from a kernel-global IDA and is
+        // nonzero when another driver (amd-pmf, ...) registers first.
+        let (_tmp, base, power) = fake_sysfs();
+        fs::rename(
+            base.join("platform-profile/platform-profile-0"),
+            base.join("platform-profile/platform-profile-3"),
+        )
+        .unwrap();
+        let mut sense = SysfsSense::new(base.clone(), power).unwrap();
+        let profiles = sense.profiles().unwrap();
+        assert_eq!(profiles.active.as_str(), "balanced-performance");
+
+        let quiet = profiles
+            .available
+            .iter()
+            .find(|p| p.as_str() == "quiet")
+            .unwrap()
+            .clone();
+        sense.set_profile(&quiet).unwrap();
+        assert_eq!(
+            read(&base.join("platform-profile/platform-profile-3/profile")),
+            "quiet"
+        );
+    }
+
+    #[test]
+    fn stock_acer_wmi_without_sense_group_yields_driver_missing() {
+        // Stock acer-wmi creates the same platform dir, minus the sense
+        // attribute groups — that still counts as driver missing.
+        let tmp = TempDir::new().unwrap();
+        let base = tmp.path().join("acer-wmi");
+        fs::create_dir_all(&base).unwrap();
+        let err = SysfsSense::new(base.clone(), tmp.path().to_path_buf()).unwrap_err();
+        assert_eq!(err, SenseError::DriverMissing(base.display().to_string()));
+    }
+
+    #[test]
+    fn predator_sense_dir_is_recognized_as_driver_present() {
+        let tmp = TempDir::new().unwrap();
+        let base = tmp.path().join("acer-wmi");
+        fs::create_dir_all(base.join("predator_sense")).unwrap();
+        let sense = SysfsSense::new(base, tmp.path().to_path_buf()).unwrap();
+        // Functional support stays nitro_sense-only for now.
+        let caps = sense.capabilities();
+        assert!(!caps.fan_control);
+        assert!(!caps.power);
+    }
+
+    #[test]
+    fn malformed_fan_input_maps_to_malformed() {
+        let (_tmp, base, power) = fake_sysfs();
+        write(&base.join("hwmon/hwmon4/fan1_input"), "banana\n");
+        let sense = SysfsSense::new(base, power).unwrap();
+        assert!(matches!(
+            sense.telemetry().unwrap_err(),
+            SenseError::Malformed(_)
+        ));
+    }
+
+    #[test]
+    fn malformed_limiter_flag_maps_to_malformed() {
+        let (_tmp, base, power) = fake_sysfs();
+        write(&base.join("nitro_sense/battery_limiter"), "2\n");
+        let sense = SysfsSense::new(base, power).unwrap();
+        assert!(matches!(
+            sense.power().unwrap_err(),
+            SenseError::Malformed(_)
+        ));
+    }
+
+    #[test]
+    fn usb_level_outside_set_maps_to_malformed() {
+        let (_tmp, base, power) = fake_sysfs();
+        write(&base.join("nitro_sense/usb_charging"), "15\n");
+        let sense = SysfsSense::new(base, power).unwrap();
+        assert!(matches!(
+            sense.power().unwrap_err(),
+            SenseError::Malformed(_)
+        ));
+    }
+
+    #[test]
+    fn fan_speed_out_of_range_maps_to_malformed() {
+        // Regression for the error contract: out-of-range driver content is
+        // Malformed (driver's fault), never InvalidDuty (user's fault).
+        let (_tmp, base, power) = fake_sysfs();
+        write(&base.join("nitro_sense/fan_speed"), "150,50\n");
+        let sense = SysfsSense::new(base, power).unwrap();
+        assert!(matches!(
+            sense.fan_mode().unwrap_err(),
+            SenseError::Malformed(_)
+        ));
     }
 }
