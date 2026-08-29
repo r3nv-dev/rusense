@@ -10,6 +10,7 @@ use crate::domain::Telemetry;
 /// Ring buffer holding the most recent [`Telemetry`] samples.
 ///
 /// Pushing beyond capacity evicts the oldest sample.
+#[derive(Debug)]
 pub struct History {
     capacity: usize,
     samples: VecDeque<Telemetry>,
@@ -46,14 +47,19 @@ impl History {
         self.samples.is_empty()
     }
 
+    /// The most recent sample, if any.
+    pub fn latest(&self) -> Option<&Telemetry> {
+        self.samples.back()
+    }
+
     /// Temperature series for sensor `idx` (0..3), oldest→newest.
     ///
     /// Panic-free: an `idx` outside 0..3 returns an empty `Vec`.
     pub fn temps_series(&self, idx: usize) -> Vec<f32> {
-        if idx >= 3 {
-            return Vec::new();
-        }
-        self.samples.iter().map(|t| t.temps[idx]).collect()
+        self.samples
+            .iter()
+            .filter_map(|t| t.temps.get(idx).copied())
+            .collect()
     }
 
     /// Fan RPM series oldest→newest as `(cpu, gpu)`, widened to `u64`
@@ -131,6 +137,26 @@ mod tests {
         assert_eq!(h.temps_series(0), vec![0.0, 1.0, 2.0]);
         assert_eq!(h.temps_series(1), vec![10.0, 11.0, 12.0]);
         assert_eq!(h.temps_series(2), vec![20.0, 21.0, 22.0]);
+    }
+
+    #[test]
+    fn temps_series_keeps_push_order_after_eviction() {
+        let mut h = History::new(3);
+        for n in 0..5 {
+            h.push(sample(n));
+        }
+        // Samples 0 and 1 were evicted; 2, 3, 4 remain oldest→newest.
+        assert_eq!(h.temps_series(0), vec![2.0, 3.0, 4.0]);
+    }
+
+    #[test]
+    fn latest_returns_newest_sample_or_none() {
+        let mut h = History::new(2);
+        assert!(h.latest().is_none());
+        h.push(sample(1));
+        h.push(sample(2));
+        h.push(sample(3)); // Evicts sample(1).
+        assert_eq!(h.latest().unwrap().fan_cpu_rpm, 1003);
     }
 
     #[test]
