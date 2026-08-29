@@ -163,6 +163,16 @@
 
   $('#modes').addEventListener('click', e => {
     const b = e.target.closest('.mode'); if (!b) return;
+    if (b.dataset.v === 'custom') {
+      // 0,0 e 100,100 são aliases do driver (auto/max): FanMode::custom
+      // normalizaria de volta e Custom ficaria inalcançável na sessão.
+      // Se AMBOS os sliders estão num extremo aliased, reentra em 50,50.
+      const cpu = +$('#s-cpu').value, gpu = +$('#s-gpu').value;
+      if ((cpu === 0 && gpu === 0) || (cpu === 100 && gpu === 100)) {
+        $('#s-cpu').value = $('#s-gpu').value = 50;
+        $('#o-cpu').textContent = $('#o-gpu').textContent = '50%';
+      }
+    }
     applyFan(b.dataset.v);
   });
 
