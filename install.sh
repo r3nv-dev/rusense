@@ -27,13 +27,18 @@ fi
 
 install -m 644 "$RULE_SRC" "$RULE_DST"
 udevadm control --reload
-udevadm trigger --subsystem-match=platform
+# --action=add é essencial: o trigger sintetiza eventos CHANGE por padrão,
+# que não casam com o ACTION=="add" da regra — sem ele, as permissões só
+# seriam aplicadas no próximo boot/reload do driver.
+udevadm trigger --action=add --subsystem-match=platform
 
 echo "feito:"
 echo "  - regra copiada pra $RULE_DST"
 echo "  - udev recarregado e device platform re-disparado (permissões já aplicadas)"
 echo "  - grupo 'wheel' agora tem escrita nos controles do driver"
 echo
-echo "pra desfazer (voltar ao modo somente leitura):"
+echo "pra desfazer:"
 echo "  sudo rm $RULE_DST"
-echo "  sudo udevadm control --reload && sudo udevadm trigger --subsystem-match=platform"
+echo "  sudo udevadm control --reload"
+echo "  (remover a regra não revoga permissões já aplicadas — o modo somente"
+echo "   leitura volta no próximo boot ou reload do driver linuwu_sense)"
