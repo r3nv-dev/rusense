@@ -1,8 +1,10 @@
 //! rusense — TUI NitroSense clone over the Linuwu-Sense driver.
 //!
-//! `rusense` talks to the real driver; `rusense --mock` runs anywhere.
+//! `rusense` talks to the real driver; `rusense --mock` runs anywhere;
+//! `rusense --once` prints one telemetry sample as JSON (waybar/scripts).
 
 mod app;
+mod once;
 mod ui;
 
 use std::env;
@@ -19,17 +21,34 @@ use crate::app::App;
 /// Telemetry refresh period.
 const TICK: Duration = Duration::from_secs(2);
 
+const USAGE: &str = "\
+uso: rusense [--mock] [--once]
+
+  --mock      backend simulado (roda em qualquer máquina, sem driver)
+  --once      imprime uma leitura de telemetria em JSON e sai
+  -h, --help  mostra esta ajuda";
+
 fn main() -> ExitCode {
     let mut mock = false;
+    let mut once = false;
     for arg in env::args().skip(1) {
         match arg.as_str() {
             "--mock" => mock = true,
+            "--once" => once = true,
+            "-h" | "--help" => {
+                println!("{USAGE}");
+                return ExitCode::SUCCESS;
+            }
             other => {
                 eprintln!("argumento desconhecido: {other}");
-                eprintln!("uso: rusense [--mock]");
+                eprintln!("{USAGE}");
                 return ExitCode::from(2);
             }
         }
+    }
+
+    if once {
+        return run_once(mock);
     }
 
     // Fail before touching the terminal so the PT-BR message (e.g. the
@@ -41,7 +60,7 @@ fn main() -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    let mut app = App::new(port);
+    let mut app = App::new(port, mock);
 
     // init() also installs a panic hook that restores the terminal.
     let mut terminal = ratatui::init();
@@ -50,6 +69,20 @@ fn main() -> ExitCode {
 
     match result {
         Ok(()) => ExitCode::SUCCESS,
+        Err(e) => {
+            eprintln!("{e}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+/// `--once`: no terminal UI — read one sample, print JSON, exit.
+fn run_once(mock: bool) -> ExitCode {
+    match connect(mock).and_then(|port| port.telemetry()) {
+        Ok(t) => {
+            println!("{}", once::telemetry_json(&t));
+            ExitCode::SUCCESS
+        }
         Err(e) => {
             eprintln!("{e}");
             ExitCode::FAILURE

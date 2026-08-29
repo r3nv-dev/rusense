@@ -1,9 +1,7 @@
 //! TUI state and key handling — no terminal I/O, fully unit-testable.
 
 use ratatui::crossterm::event::KeyCode;
-use rusense_core::{
-    Capabilities, FanDuty, FanMode, History, PowerSettings, ProfileSet, SensePort, UsbChargeLevel,
-};
+use rusense_core::{Capabilities, FanDuty, FanMode, History, PowerSettings, ProfileSet, SensePort};
 
 /// Telemetry samples kept for the sparkline (one per ~2s tick).
 const HISTORY_CAPACITY: usize = 60;
@@ -27,13 +25,17 @@ pub struct App {
     pub focus_gpu: bool,
     /// Display text of the last `SenseError`, shown in the status bar.
     pub last_error: Option<String>,
+    /// True when running against the mock backend (`--mock`); the
+    /// header shows "mock" instead of "driver ok".
+    pub mock: bool,
 }
 
 impl App {
-    /// Build the app and load the initial state from the port.
+    /// Build the app and load the initial state from the port. `mock`
+    /// is presentation-only (header badge).
     ///
     /// Load errors land in `last_error`; fields stay `None`/default.
-    pub fn new(port: Box<dyn SensePort + Send>) -> Self {
+    pub fn new(port: Box<dyn SensePort + Send>, mock: bool) -> Self {
         let caps = port.capabilities();
         let mut app = Self {
             port,
@@ -46,6 +48,7 @@ impl App {
             custom_gpu: 50,
             focus_gpu: false,
             last_error: None,
+            mock,
         };
         app.refresh_controls();
         app
@@ -53,13 +56,21 @@ impl App {
 
     /// Periodic refresh: push one telemetry sample and re-read the
     /// controls (the driver is the source of truth — another tool may
-    /// have changed them). Errors land in `last_error`, old data stays.
+    /// have changed them). Errors land in `last_error`, old data stays;
+    /// a fully successful refresh clears a stale transient error.
     pub fn on_tick(&mut self) {
+        let mut ok = true;
         match self.port.telemetry() {
             Ok(t) => self.history.push(t),
-            Err(e) => self.last_error = Some(e.to_string()),
+            Err(e) => {
+                self.last_error = Some(e.to_string());
+                ok = false;
+            }
         }
-        self.refresh_controls();
+        ok &= self.refresh_controls();
+        if ok {
+            self.last_error = None;
+        }
     }
 
     /// Handle one key press. `q`/`Esc` (quit) are the caller's job.
@@ -86,28 +97,46 @@ impl App {
         }
     }
 
-    /// Re-read profiles, fan mode and power from the port. Read errors
-    /// land in `last_error`; previously loaded data is kept.
-    fn refresh_controls(&mut self) {
+    /// Re-read profiles and the capability-gated controls from the port
+    /// (fan mode and power are skipped without the matching capability —
+    /// they would fail on every tick forever on limited hardware).
+    /// Read errors land in `last_error`; previously loaded data is kept.
+    /// Returns whether every attempted read succeeded.
+    fn refresh_controls(&mut self) -> bool {
+        let mut ok = true;
         match self.port.profiles() {
             Ok(p) => self.profiles = Some(p),
-            Err(e) => self.last_error = Some(e.to_string()),
+            Err(e) => {
+                self.last_error = Some(e.to_string());
+                ok = false;
+            }
         }
-        match self.port.fan_mode() {
-            Ok(m) => {
-                self.fan = m;
-                // Keep the sliders in sync with an externally set custom mode.
-                if let FanMode::Custom { cpu, gpu } = m {
-                    self.custom_cpu = cpu.get();
-                    self.custom_gpu = gpu.get();
+        if self.caps.fan_control {
+            match self.port.fan_mode() {
+                Ok(m) => {
+                    self.fan = m;
+                    // Keep the sliders in sync with an externally set custom mode.
+                    if let FanMode::Custom { cpu, gpu } = m {
+                        self.custom_cpu = cpu.get();
+                        self.custom_gpu = gpu.get();
+                    }
+                }
+                Err(e) => {
+                    self.last_error = Some(e.to_string());
+                    ok = false;
                 }
             }
-            Err(e) => self.last_error = Some(e.to_string()),
         }
-        match self.port.power() {
-            Ok(s) => self.power = Some(s),
-            Err(e) => self.last_error = Some(e.to_string()),
+        if self.caps.power {
+            match self.port.power() {
+                Ok(s) => self.power = Some(s),
+                Err(e) => {
+                    self.last_error = Some(e.to_string());
+                    ok = false;
+                }
+            }
         }
+        ok
     }
 
     /// Activate the `index`-th available profile (0-based). Out-of-range
@@ -193,28 +222,127 @@ impl App {
 
     /// Cycle the usb charge level 0 → 10 → 20 → 30 → 0.
     fn cycle_usb(&mut self) {
-        let Some(current) = self.power.as_ref().map(|s| s.usb.get()) else {
-            return;
-        };
-        match UsbChargeLevel::new((current + 10) % 40) {
-            Ok(next) => self.update_power(|s| s.usb = next),
-            Err(e) => self.last_error = Some(e.to_string()),
-        }
+        self.update_power(|s| s.usb = s.usb.next());
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use rusense_core::connect;
+    use std::sync::{Arc, Mutex};
+
+    use rusense_core::{connect, MockSense, Profile, SenseError, Telemetry};
 
     use super::*;
 
     fn mock_app() -> App {
-        App::new(connect(true).expect("mock connect nunca falha"))
+        App::new(connect(true).expect("mock connect nunca falha"), true)
     }
 
     fn custom(cpu: u8, gpu: u8) -> FanMode {
         FanMode::custom(FanDuty::new(cpu).unwrap(), FanDuty::new(gpu).unwrap())
+    }
+
+    // --- error-path fixture ---
+
+    /// Per-operation failure switches, shared with the test through an
+    /// `Arc<Mutex<_>>` because the [`App`] owns the port.
+    #[derive(Default)]
+    struct Failures {
+        telemetry: bool,
+        profiles: bool,
+        fan_mode: bool,
+        power: bool,
+        set_profile: bool,
+        set_fan_mode: bool,
+        set_power: bool,
+    }
+
+    /// [`MockSense`] wrapper with switchable per-operation failures and
+    /// overridable capabilities (pattern: `BareCaps` in ui.rs).
+    struct FailingPort {
+        inner: MockSense,
+        caps: Capabilities,
+        fail: Arc<Mutex<Failures>>,
+    }
+
+    fn sim_error() -> SenseError {
+        SenseError::Io("falha simulada".into())
+    }
+
+    impl FailingPort {
+        fn fails(&self, pick: impl Fn(&Failures) -> bool) -> bool {
+            pick(&self.fail.lock().unwrap())
+        }
+    }
+
+    impl SensePort for FailingPort {
+        fn capabilities(&self) -> Capabilities {
+            self.caps
+        }
+        fn telemetry(&self) -> Result<Telemetry, SenseError> {
+            if self.fails(|f| f.telemetry) {
+                return Err(sim_error());
+            }
+            self.inner.telemetry()
+        }
+        fn profiles(&self) -> Result<ProfileSet, SenseError> {
+            if self.fails(|f| f.profiles) {
+                return Err(sim_error());
+            }
+            self.inner.profiles()
+        }
+        fn set_profile(&mut self, p: &Profile) -> Result<(), SenseError> {
+            if self.fails(|f| f.set_profile) {
+                return Err(sim_error());
+            }
+            self.inner.set_profile(p)
+        }
+        fn fan_mode(&self) -> Result<FanMode, SenseError> {
+            if self.fails(|f| f.fan_mode) {
+                return Err(sim_error());
+            }
+            self.inner.fan_mode()
+        }
+        fn set_fan_mode(&mut self, m: FanMode) -> Result<(), SenseError> {
+            if self.fails(|f| f.set_fan_mode) {
+                return Err(sim_error());
+            }
+            self.inner.set_fan_mode(m)
+        }
+        fn power(&self) -> Result<PowerSettings, SenseError> {
+            if self.fails(|f| f.power) {
+                return Err(sim_error());
+            }
+            self.inner.power()
+        }
+        fn set_power(&mut self, s: PowerSettings) -> Result<(), SenseError> {
+            if self.fails(|f| f.set_power) {
+                // Honor the port contract: earlier fields may already be
+                // applied when the write fails — apply, then fail.
+                self.inner.set_power(s)?;
+                return Err(sim_error());
+            }
+            self.inner.set_power(s)
+        }
+    }
+
+    /// App over a [`FailingPort`] plus the shared failure switches.
+    fn failing_app(caps: Capabilities) -> (App, Arc<Mutex<Failures>>) {
+        let fail = Arc::new(Mutex::new(Failures::default()));
+        let port = FailingPort {
+            inner: MockSense::new(),
+            caps,
+            fail: Arc::clone(&fail),
+        };
+        (App::new(Box::new(port), false), fail)
+    }
+
+    fn full_caps() -> Capabilities {
+        Capabilities {
+            fan_control: true,
+            power: true,
+            four_zone_kb: false,
+        }
     }
 
     // --- construction ---
@@ -369,6 +497,91 @@ mod tests {
         assert!(!app.port.power().unwrap().backlight_timeout);
         app.on_key(KeyCode::Char('k'));
         assert!(app.port.power().unwrap().backlight_timeout);
+    }
+
+    // --- error paths ---
+
+    #[test]
+    fn set_fan_mode_failure_sets_error_and_keeps_state() {
+        let (mut app, fail) = failing_app(full_caps());
+        fail.lock().unwrap().set_fan_mode = true;
+        app.on_key(KeyCode::Char('m'));
+        assert!(app.last_error.is_some());
+        assert_eq!(app.fan, FanMode::Auto);
+        assert_eq!(app.port.fan_mode().unwrap(), FanMode::Auto);
+    }
+
+    #[test]
+    fn set_profile_failure_sets_error_and_keeps_active() {
+        let (mut app, fail) = failing_app(full_caps());
+        fail.lock().unwrap().set_profile = true;
+        app.on_key(KeyCode::Char('2'));
+        assert!(app.last_error.is_some());
+        assert_eq!(
+            app.profiles.as_ref().unwrap().active.as_str(),
+            "balanced-performance"
+        );
+    }
+
+    #[test]
+    fn set_power_failure_rereads_power_from_port() {
+        let (mut app, fail) = failing_app(full_caps());
+        fail.lock().unwrap().set_power = true;
+        app.on_key(KeyCode::Char('b'));
+        assert!(app.last_error.is_some());
+        // The wrapper applies before failing (partial-write contract):
+        // only the re-read branch can observe the toggled limiter.
+        assert!(!app.power.as_ref().unwrap().limiter);
+    }
+
+    #[test]
+    fn telemetry_failure_keeps_history_and_next_success_clears_error() {
+        let (mut app, fail) = failing_app(full_caps());
+        app.on_tick();
+        assert_eq!(app.history.len(), 1);
+
+        fail.lock().unwrap().telemetry = true;
+        app.on_tick();
+        assert_eq!(app.history.len(), 1); // Old history kept.
+        assert!(app.last_error.is_some());
+
+        fail.lock().unwrap().telemetry = false;
+        app.on_tick();
+        assert_eq!(app.history.len(), 2);
+        // A fully successful refresh clears the transient error.
+        assert!(app.last_error.is_none());
+    }
+
+    #[test]
+    fn profiles_read_failure_keeps_loaded_set() {
+        let (mut app, fail) = failing_app(full_caps());
+        fail.lock().unwrap().profiles = true;
+        app.on_tick();
+        assert!(app.last_error.is_some());
+        assert_eq!(
+            app.profiles.as_ref().unwrap().active.as_str(),
+            "balanced-performance"
+        );
+    }
+
+    #[test]
+    fn gated_reads_are_skipped_without_capabilities() {
+        let (mut app, fail) = failing_app(Capabilities {
+            fan_control: false,
+            power: false,
+            four_zone_kb: false,
+        });
+        {
+            let mut f = fail.lock().unwrap();
+            f.fan_mode = true;
+            f.power = true;
+        }
+        app.on_tick();
+        app.on_tick();
+        // The failing gated reads were never attempted: no error
+        // surfaced, while the ungated profile read kept refreshing.
+        assert!(app.last_error.is_none());
+        assert!(app.profiles.is_some());
     }
 
     // --- unmapped keys ---

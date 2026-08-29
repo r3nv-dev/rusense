@@ -3,7 +3,7 @@
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Style, Stylize};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Gauge, Paragraph, Sparkline};
+use ratatui::widgets::{Block, Gauge, Paragraph, Sparkline, Wrap};
 use ratatui::Frame;
 use rusense_core::FanMode;
 
@@ -17,6 +17,14 @@ const MAX_RPM: f64 = 6000.0;
 /// Render the whole UI. Sections without the matching capability are
 /// hidden entirely, mirroring the official AcerSense behavior.
 pub fn render(frame: &mut Frame, app: &App) {
+    // The footer is split off first so it survives small heights: only
+    // what remains is disputed by the section constraints.
+    let [main_area, footer_area] = Layout::vertical([
+        Constraint::Min(0),
+        Constraint::Length(footer_height(app, frame.area().width)),
+    ])
+    .areas(frame.area());
+
     let mut constraints = vec![Constraint::Length(7), Constraint::Length(3)];
     if app.caps.fan_control {
         constraints.push(Constraint::Length(4));
@@ -25,11 +33,10 @@ pub fn render(frame: &mut Frame, app: &App) {
         constraints.push(Constraint::Length(4));
     }
     constraints.push(Constraint::Min(0));
-    constraints.push(Constraint::Length(1));
 
-    let areas = Layout::vertical(constraints).split(frame.area());
+    let areas = Layout::vertical(constraints).split(main_area);
     // One area per constraint pushed above, in the same order; the
-    // penultimate one is the flexible spacer.
+    // last one is the flexible spacer.
     let mut areas = areas.iter().copied();
     let mut next = || areas.next().expect("uma área por constraint");
 
@@ -41,15 +48,27 @@ pub fn render(frame: &mut Frame, app: &App) {
     if app.caps.power {
         render_power(frame, app, next());
     }
-    next(); // Flexible spacer.
-    render_footer(frame, app, next());
+    render_footer(frame, app, footer_area);
+}
+
+/// Footer height: one hint line, or enough lines (capped at 3) to wrap
+/// the current error message at `width` columns.
+fn footer_height(app: &App, width: u16) -> u16 {
+    match &app.last_error {
+        Some(msg) if width > 0 => {
+            let lines = msg.chars().count().div_ceil(usize::from(width));
+            u16::try_from(lines.clamp(1, 3)).expect("1..=3 cabe em u16")
+        }
+        _ => 1,
+    }
 }
 
 /// Header block with fan gauges, current temps and the CPU sparkline.
 fn render_monitor(frame: &mut Frame, app: &App, area: Rect) {
+    let badge = if app.mock { " mock " } else { " driver ok " };
     let block = Block::bordered()
         .title(Line::from(" RUSENSE ").fg(ACCENT).bold())
-        .title_top(Line::from(" driver ok ").right_aligned().dim());
+        .title_top(Line::from(badge).right_aligned().dim());
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
@@ -218,7 +237,10 @@ fn render_footer(frame: &mut Frame, app: &App, area: Rect) {
         None => {
             let mut hints: Vec<String> = Vec::new();
             if let Some(set) = &app.profiles {
-                hints.push(format!("1-{} perfil", set.available.len()));
+                hints.push(match set.available.len() {
+                    1 => "1 perfil".to_string(),
+                    n => format!("1-{n} perfil"),
+                });
             }
             if app.caps.fan_control {
                 hints.push("a/m/c fans".to_string());
@@ -231,7 +253,7 @@ fn render_footer(frame: &mut Frame, app: &App, area: Rect) {
             Line::from(Span::raw(hints.join(" · ")).dim())
         }
     };
-    frame.render_widget(Paragraph::new(line), area);
+    frame.render_widget(Paragraph::new(line).wrap(Wrap { trim: true }), area);
 }
 
 #[cfg(test)]
@@ -246,9 +268,9 @@ mod tests {
     use super::*;
     use crate::app::App;
 
-    /// Render `app` at 80x24 and return the buffer as plain text.
-    fn render_to_text(app: &App) -> String {
-        let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+    /// Render `app` at the given size and return the buffer as plain text.
+    fn render_sized(app: &App, width: u16, height: u16) -> String {
+        let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
         terminal.draw(|frame| render(frame, app)).unwrap();
         terminal
             .backend()
@@ -259,9 +281,14 @@ mod tests {
             .collect()
     }
 
+    /// Render `app` at 80x24 and return the buffer as plain text.
+    fn render_to_text(app: &App) -> String {
+        render_sized(app, 80, 24)
+    }
+
     #[test]
     fn renders_mock_app_without_panicking() {
-        let mut app = App::new(connect(true).unwrap());
+        let mut app = App::new(connect(true).unwrap(), true);
         app.on_tick();
         let text = render_to_text(&app);
         assert!(text.contains("RUSENSE"));
@@ -276,7 +303,7 @@ mod tests {
 
     #[test]
     fn renders_before_first_tick_without_telemetry() {
-        let app = App::new(connect(true).unwrap());
+        let app = App::new(connect(true).unwrap(), true);
         let text = render_to_text(&app);
         assert!(text.contains("aguardando leitura"));
         assert!(text.contains("0 rpm"));
@@ -284,7 +311,7 @@ mod tests {
 
     #[test]
     fn error_replaces_footer_hints() {
-        let mut app = App::new(connect(true).unwrap());
+        let mut app = App::new(connect(true).unwrap(), true);
         app.last_error = Some("sem permissão de escrita — rode o install.sh (regra udev)".into());
         let text = render_to_text(&app);
         assert!(text.contains("sem permissão de escrita"));
@@ -326,8 +353,79 @@ mod tests {
     }
 
     #[test]
+    fn header_badge_reflects_backend_kind() {
+        let mock_app = App::new(connect(true).unwrap(), true);
+        let text = render_to_text(&mock_app);
+        assert!(text.contains(" mock "));
+        assert!(!text.contains("driver ok"));
+
+        let driver_app = App::new(connect(true).unwrap(), false);
+        let text = render_to_text(&driver_app);
+        assert!(text.contains("driver ok"));
+    }
+
+    #[test]
+    fn footer_survives_small_heights() {
+        let mut app = App::new(connect(true).unwrap(), true);
+        app.on_tick();
+        let text = render_sized(&app, 80, 10);
+        assert!(text.contains("RUSENSE"));
+        assert!(text.contains("q sai"));
+        // Even at 2 rows the status line keeps its slot.
+        assert!(render_sized(&app, 80, 2).contains("q sai"));
+    }
+
+    #[test]
+    fn long_error_wraps_in_footer() {
+        let mut app = App::new(connect(true).unwrap(), true);
+        app.last_error = Some("sem permissão de escrita — rode o install.sh (regra udev)".into());
+        let text = render_sized(&app, 46, 24);
+        // Wider than 46 columns: without wrapping the tail is truncated.
+        assert!(text.contains("sem permissão"));
+        assert!(text.contains("udev"));
+    }
+
+    /// Mock wrapper reporting a single platform profile.
+    struct SingleProfile(MockSense);
+
+    impl SensePort for SingleProfile {
+        fn capabilities(&self) -> Capabilities {
+            self.0.capabilities()
+        }
+        fn telemetry(&self) -> Result<Telemetry, SenseError> {
+            self.0.telemetry()
+        }
+        fn profiles(&self) -> Result<ProfileSet, SenseError> {
+            ProfileSet::parse("balanced", "balanced")
+        }
+        fn set_profile(&mut self, p: &Profile) -> Result<(), SenseError> {
+            self.0.set_profile(p)
+        }
+        fn fan_mode(&self) -> Result<FanMode, SenseError> {
+            self.0.fan_mode()
+        }
+        fn set_fan_mode(&mut self, m: FanMode) -> Result<(), SenseError> {
+            self.0.set_fan_mode(m)
+        }
+        fn power(&self) -> Result<PowerSettings, SenseError> {
+            self.0.power()
+        }
+        fn set_power(&mut self, s: PowerSettings) -> Result<(), SenseError> {
+            self.0.set_power(s)
+        }
+    }
+
+    #[test]
+    fn single_profile_hint_drops_the_range() {
+        let app = App::new(Box::new(SingleProfile(MockSense::new())), true);
+        let text = render_to_text(&app);
+        assert!(text.contains("1 perfil"));
+        assert!(!text.contains("1-1"));
+    }
+
+    #[test]
     fn sections_without_capability_are_hidden() {
-        let mut app = App::new(Box::new(BareCaps(MockSense::new())));
+        let mut app = App::new(Box::new(BareCaps(MockSense::new())), true);
         app.on_tick();
         let text = render_to_text(&app);
         assert!(text.contains("RUSENSE"));

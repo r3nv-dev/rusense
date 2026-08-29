@@ -135,6 +135,15 @@ impl UsbChargeLevel {
     pub fn get(self) -> u8 {
         self.0
     }
+
+    /// The next level in the `0 → 10 → 20 → 30 → 0` cycle.
+    #[must_use]
+    pub fn next(self) -> Self {
+        match self.0 {
+            30 => Self(0),
+            v => Self(v + 10),
+        }
+    }
 }
 
 /// Live sensor readings.
@@ -358,6 +367,17 @@ mod tests {
         for v in [0u8, 10, 20, 30] {
             assert_eq!(UsbChargeLevel::new(v).unwrap().get(), v);
         }
+    }
+
+    #[test]
+    fn usb_charge_level_next_cycles_and_wraps() {
+        let mut level = UsbChargeLevel::new(0).unwrap();
+        let mut seen = Vec::new();
+        for _ in 0..4 {
+            level = level.next();
+            seen.push(level.get());
+        }
+        assert_eq!(seen, [10, 20, 30, 0]);
     }
 
     #[test]
