@@ -6,7 +6,9 @@ Controle de perfis térmicos, fans, bateria e energia para notebooks Acer Nitro/
 
 ## Screenshots
 
-Screenshots em breve — enquanto isso, rode em qualquer máquina (sem hardware Acer):
+![RuSense — GUI e TUI lado a lado no Hyprland](docs/screenshot.png)
+
+*GUI (`rusense-gui`) e TUI (`rusense`) rodando num Acer Nitro V 15 real. Para testar sem hardware Acer:*
 
 ```sh
 rusense --mock        # TUI simulado
