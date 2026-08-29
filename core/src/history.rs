@@ -63,7 +63,8 @@ impl History {
     }
 
     /// Fan RPM series oldest→newest as `(cpu, gpu)`, widened to `u64`
-    /// because ratatui's `Sparkline` consumes `&[u64]`.
+    /// for chart widgets that consume `&[u64]`. Available to any
+    /// frontend; the TUI currently charts temperatures only.
     pub fn rpm_series(&self) -> (Vec<u64>, Vec<u64>) {
         self.samples
             .iter()

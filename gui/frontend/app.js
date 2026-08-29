@@ -119,6 +119,8 @@
     $('#st-batt').textContent =
       s.telemetry.battery_pct + '% · ' + s.telemetry.battery_status.toLowerCase();
     $('#st-mock').hidden = !s.mock;
+    // O chip estático da titlebar mentiria em --mock: segue o backend real.
+    $('#st-driver').textContent = s.mock ? 'modo simulado' : 'linuwu_sense carregado';
   }
 
   // ---------- bridge ----------

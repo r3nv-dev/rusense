@@ -43,6 +43,12 @@ Binários em `target/release/`:
 - `target/release/rusense` — TUI
 - `target/release/rusense-gui` — GUI
 
+Ou instale os dois direto no PATH (`~/.cargo/bin`):
+
+```sh
+cargo install --path tui && cargo install --path gui
+```
+
 Para liberar escrita nos controles do driver (perfis, fans, energia) sem rodar o app como root, instale a regra udev:
 
 ```sh
@@ -78,7 +84,7 @@ rusense --once
 # {"fan_cpu_rpm":2348,"fan_gpu_rpm":2081,"temp_cpu":41.0,"temp_gpu":35.0,"temp_sys":40.0,"battery_pct":80,"battery_status":"Not charging"}
 ```
 
-Exemplo de módulo custom no waybar:
+Exemplo de módulo custom no waybar (assume `rusense` no PATH via `cargo install`, acima):
 
 ```json
 "custom/rusense": {
@@ -110,7 +116,7 @@ rusense-gui ──┘         (domínio puro, sem I/O nas structs)
 - `tui` / `gui` — adaptadores de apresentação; nunca tocam sysfs direto.
 - Capacidades detectadas em runtime por existência de arquivo (nada de hardcode por modelo).
 
-**105 testes** cobrem o projeto (57 core + 36 tui + 12 gui), todos rodando sem hardware — o `MockSense` permite contribuir de qualquer máquina, sem ter um Acer.
+**106 testes** cobrem o projeto (57 core + 37 tui + 12 gui), todos rodando sem hardware — o `MockSense` permite contribuir de qualquer máquina, sem ter um Acer.
 
 ## Compatibilidade
 

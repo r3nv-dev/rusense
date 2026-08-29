@@ -117,7 +117,7 @@ impl App {
             }
             KeyCode::Char('a') if self.caps.fan_control => self.apply_fan(FanMode::Auto),
             KeyCode::Char('m') if self.caps.fan_control => self.apply_fan(FanMode::Max),
-            KeyCode::Char('c') if self.caps.fan_control => self.apply_custom_fan(),
+            KeyCode::Char('c') if self.caps.fan_control => self.enter_custom_fan(),
             KeyCode::Tab if self.caps.fan_control => self.focus_gpu = !self.focus_gpu,
             KeyCode::Left if self.caps.fan_control => self.adjust_slider(false),
             KeyCode::Right if self.caps.fan_control => self.adjust_slider(true),
@@ -204,6 +204,21 @@ impl App {
             }
             Err(e) => self.set_action_error(e.to_string()),
         }
+    }
+
+    /// Enter custom mode via the `c` key. (0,0) and (100,100) are
+    /// aliased pairs — `FanMode::custom` normalizes them to Auto/Max —
+    /// so if BOTH sliders sit on one, reset them to 50,50 first so `c`
+    /// genuinely engages Custom (mirrors the GUI guard in
+    /// `gui/frontend/app.js`, `#modes` click handler).
+    fn enter_custom_fan(&mut self) {
+        if (self.custom_cpu == 0 && self.custom_gpu == 0)
+            || (self.custom_cpu == 100 && self.custom_gpu == 100)
+        {
+            self.custom_cpu = 50;
+            self.custom_gpu = 50;
+        }
+        self.apply_custom_fan();
     }
 
     /// Apply the slider positions as a custom mode. `FanMode::custom`
@@ -486,6 +501,27 @@ mod tests {
         app.on_key(KeyCode::Tab);
         app.on_key(KeyCode::Left); // gpu 50 → 40.
         assert_eq!(app.port.fan_mode().unwrap(), custom(60, 40));
+    }
+
+    #[test]
+    fn c_from_aliased_slider_extremes_reenters_custom_at_50_50() {
+        let mut app = mock_app();
+        // Both sliders down to the aliased 0,0 (mode stays Auto: outside
+        // custom mode arrows don't apply).
+        for _ in 0..5 {
+            app.on_key(KeyCode::Left);
+        }
+        app.on_key(KeyCode::Tab);
+        for _ in 0..5 {
+            app.on_key(KeyCode::Left);
+        }
+        assert_eq!((app.custom_cpu, app.custom_gpu), (0, 0));
+
+        // `c` must engage Custom for real, not send the Auto alias.
+        app.on_key(KeyCode::Char('c'));
+        assert_eq!(app.port.fan_mode().unwrap(), custom(50, 50));
+        assert_eq!((app.custom_cpu, app.custom_gpu), (50, 50));
+        assert!(app.last_error.is_none());
     }
 
     #[test]

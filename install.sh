@@ -25,12 +25,23 @@ if [[ ${EUID} -ne 0 ]]; then
     exit 1
 fi
 
+# Aviso não-fatal: em Debian/Ubuntu não existe grupo "wheel" — a regra
+# instala mesmo assim, mas só faz efeito depois de trocar o grupo nela.
+if ! getent group wheel >/dev/null 2>&1; then
+    echo "aviso: o grupo 'wheel' não existe nesta distro (comum em Debian/Ubuntu)." >&2
+    echo "  A regra será instalada mesmo assim, mas sem efeito até você trocar" >&2
+    echo "  'wheel' por um grupo admin real (ex.: 'sudo') em $RULE_DST" >&2
+    echo "  e recarregar: sudo udevadm control --reload && sudo udevadm trigger \\" >&2
+    echo "    --action=add --subsystem-match=platform --sysname-match=acer-wmi" >&2
+fi
+
 install -m 644 "$RULE_SRC" "$RULE_DST"
 udevadm control --reload
 # --action=add é essencial: o trigger sintetiza eventos CHANGE por padrão,
 # que não casam com o ACTION=="add" da regra — sem ele, as permissões só
-# seriam aplicadas no próximo boot/reload do driver.
-udevadm trigger --action=add --subsystem-match=platform
+# seriam aplicadas no próximo boot/reload do driver. --sysname-match limita
+# o add sintético ao acer-wmi em vez de re-disparar todo device platform.
+udevadm trigger --action=add --subsystem-match=platform --sysname-match=acer-wmi
 
 echo "feito:"
 echo "  - regra copiada pra $RULE_DST"
