@@ -2,7 +2,7 @@
 
 use thiserror::Error;
 
-#[derive(Debug, Error, PartialEq)]
+#[derive(Debug, Error, Clone, PartialEq, Eq)]
 pub enum SenseError {
     #[error("valor fora do intervalo 0–100: {0}")]
     InvalidDuty(u8),
@@ -14,6 +14,8 @@ pub enum SenseError {
     ReadOnly,
     #[error("driver linuwu_sense não encontrado em {0}")]
     DriverMissing(String),
+    #[error("conteúdo inesperado do driver: {0}")]
+    Malformed(String),
     #[error("io: {0}")]
     Io(String),
 }
@@ -45,6 +47,17 @@ pub enum FanMode {
 }
 
 impl FanMode {
+    /// Build a fan mode from explicit duties, normalizing the aliased states
+    /// (0,0) -> `Auto` and (100,100) -> `Max` so they never coexist with
+    /// equivalent `Custom` values.
+    pub fn custom(cpu: FanDuty, gpu: FanDuty) -> Self {
+        match (cpu.get(), gpu.get()) {
+            (0, 0) => Self::Auto,
+            (100, 100) => Self::Max,
+            _ => Self::Custom { cpu, gpu },
+        }
+    }
+
     pub fn to_sysfs(self) -> String {
         match self {
             Self::Auto => "0,0".into(),
@@ -55,24 +68,13 @@ impl FanMode {
 
     pub fn from_sysfs(raw: &str) -> Result<Self, SenseError> {
         let trimmed = raw.trim();
-        match trimmed {
-            "0,0" => Ok(Self::Auto),
-            "100,100" => Ok(Self::Max),
-            _ => {
-                let (cpu, gpu) = trimmed
-                    .split_once(',')
-                    .ok_or_else(|| SenseError::Io(format!("fan_speed malformado: {trimmed}")))?;
-                let parse = |s: &str| {
-                    s.trim()
-                        .parse::<u8>()
-                        .map_err(|_| SenseError::Io(format!("fan_speed malformado: {trimmed}")))
-                };
-                Ok(Self::Custom {
-                    cpu: FanDuty::new(parse(cpu)?)?,
-                    gpu: FanDuty::new(parse(gpu)?)?,
-                })
-            }
-        }
+        let malformed = || SenseError::Malformed(format!("fan_speed: {trimmed}"));
+        let (cpu, gpu) = trimmed.split_once(',').ok_or_else(malformed)?;
+        let parse = |s: &str| s.trim().parse::<u8>().map_err(|_| malformed());
+        Ok(Self::custom(
+            FanDuty::new(parse(cpu)?)?,
+            FanDuty::new(parse(gpu)?)?,
+        ))
     }
 }
 
@@ -81,6 +83,12 @@ impl FanMode {
 pub struct Profile(String);
 
 impl Profile {
+    /// Crate-internal constructor; frontends obtain profiles from
+    /// [`ProfileSet::parse`] and clone from `available`.
+    pub(crate) fn new(name: &str) -> Self {
+        Self(name.to_string())
+    }
+
     pub fn as_str(&self) -> &str {
         &self.0
     }
@@ -97,10 +105,7 @@ impl ProfileSet {
     /// Parse the sysfs `platform_profile_choices` list and the active
     /// `platform_profile` value. The active profile must be one of the choices.
     pub fn parse(choices: &str, active: &str) -> Result<Self, SenseError> {
-        let available: Vec<Profile> = choices
-            .split_whitespace()
-            .map(|name| Profile(name.to_string()))
-            .collect();
+        let available: Vec<Profile> = choices.split_whitespace().map(Profile::new).collect();
         let active = active.trim();
         match available.iter().find(|p| p.as_str() == active) {
             Some(profile) => Ok(Self {
@@ -217,12 +222,62 @@ mod tests {
     fn fan_mode_from_sysfs_rejects_malformed_input() {
         assert!(matches!(
             FanMode::from_sysfs("banana").unwrap_err(),
-            SenseError::Io(_)
+            SenseError::Malformed(_)
         ));
         assert!(matches!(
             FanMode::from_sysfs("50").unwrap_err(),
-            SenseError::Io(_)
+            SenseError::Malformed(_)
         ));
+        assert!(matches!(
+            FanMode::from_sysfs("50,70,90").unwrap_err(),
+            SenseError::Malformed(_)
+        ));
+    }
+
+    #[test]
+    fn fan_mode_from_sysfs_rejects_out_of_range_duty() {
+        assert_eq!(
+            FanMode::from_sysfs("150,50").unwrap_err(),
+            SenseError::InvalidDuty(150)
+        );
+    }
+
+    #[test]
+    fn fan_mode_from_sysfs_classifies_by_value_not_raw_string() {
+        assert_eq!(FanMode::from_sysfs("0, 0").unwrap(), FanMode::Auto);
+        assert_eq!(FanMode::from_sysfs("100, 100").unwrap(), FanMode::Max);
+    }
+
+    #[test]
+    fn fan_mode_custom_normalizes_aliased_states() {
+        let d = |v| FanDuty::new(v).unwrap();
+        assert_eq!(FanMode::custom(d(0), d(0)), FanMode::Auto);
+        assert_eq!(FanMode::custom(d(100), d(100)), FanMode::Max);
+        assert_eq!(
+            FanMode::custom(d(50), d(70)),
+            FanMode::Custom {
+                cpu: d(50),
+                gpu: d(70)
+            }
+        );
+    }
+
+    #[test]
+    fn fan_mode_aliased_custom_parses_back_normalized() {
+        let d = |v| FanDuty::new(v).unwrap();
+        let zero = FanMode::Custom {
+            cpu: d(0),
+            gpu: d(0),
+        };
+        assert_eq!(
+            FanMode::from_sysfs(&zero.to_sysfs()).unwrap(),
+            FanMode::Auto
+        );
+        let full = FanMode::Custom {
+            cpu: d(100),
+            gpu: d(100),
+        };
+        assert_eq!(FanMode::from_sysfs(&full.to_sysfs()).unwrap(), FanMode::Max);
     }
 
     #[test]
@@ -264,6 +319,31 @@ mod tests {
     fn profile_parse_rejects_active_outside_choices() {
         let err = ProfileSet::parse("quiet balanced", "turbo").unwrap_err();
         assert_eq!(err, SenseError::UnknownProfile("turbo".into()));
+    }
+
+    #[test]
+    fn profile_parse_empty_choices_rejects_any_active() {
+        assert_eq!(
+            ProfileSet::parse("", "x").unwrap_err(),
+            SenseError::UnknownProfile("x".into())
+        );
+    }
+
+    #[test]
+    fn profile_new_constructs_named_profile() {
+        assert_eq!(Profile::new("quiet").as_str(), "quiet");
+    }
+
+    // --- SenseError ---
+
+    #[test]
+    fn sense_error_is_cloneable_eq_with_ptbr_malformed_message() {
+        let e = SenseError::Malformed("fan_speed: banana".into());
+        assert_eq!(e.clone(), e);
+        assert_eq!(
+            e.to_string(),
+            "conteúdo inesperado do driver: fan_speed: banana"
+        );
     }
 
     // --- UsbChargeLevel ---
