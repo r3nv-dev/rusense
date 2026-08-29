@@ -65,8 +65,8 @@ impl Default for MockSense {
 }
 
 impl SensePort for MockSense {
-    fn capabilities(&self) -> &Capabilities {
-        &self.caps
+    fn capabilities(&self) -> Capabilities {
+        self.caps
     }
 
     fn telemetry(&self) -> Result<Telemetry, SenseError> {
@@ -142,6 +142,13 @@ mod tests {
         assert_eq!(t.temps, [41.0, 35.0, 40.0]);
         assert_eq!(t.battery_pct, 80);
         assert_eq!(t.battery_status, "Not charging");
+    }
+
+    // --- trait object safety ---
+
+    #[test]
+    fn mock_is_boxable_send_port() {
+        let _: Box<dyn SensePort + Send> = Box::new(MockSense::new());
     }
 
     // --- capabilities ---
