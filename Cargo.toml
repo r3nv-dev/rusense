@@ -1,3 +1,13 @@
 [workspace]
 resolver = "2"
 members = ["core", "tui", "gui"]
+
+# Fonte única da versão: a tag do release é conferida contra isto por
+# scripts/check-version.sh. Bump aqui vale para os três crates de uma vez.
+[workspace.package]
+version = "0.1.1"
+edition = "2021"
+license = "GPL-3.0-only"
+
+[profile.release]
+strip = true
