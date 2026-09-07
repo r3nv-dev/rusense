@@ -1,0 +1,126 @@
+# Release — publica binários prontos para quem não quer instalar a toolchain Rust.
+#
+# O TUI vai como binário ESTÁTICO (musl): sem glibc, sem dependência de distro e
+# imune à aposentadoria de imagens de runner. A GUI (Tauri) não pode ser estática
+# — webkit dlopen'a GL/EGL — e entra num job separado numa fase posterior.
+#
+# Modos:
+#   tag v*.*.*        → builda, gera checksum, attestation e cria a release como DRAFT
+#   workflow_dispatch → só builda e sobe como artefato do Actions (não cria release)
+#
+# A release nasce draft de propósito: com Immutable Releases (GA out/2025) os
+# assets não podem ser alterados depois de publicados, então inspecionar antes
+# de publicar deixou de ser boa prática e virou obrigatório.
+name: Release
+
+on:
+  push:
+    tags: ["v[0-9]+.[0-9]+.[0-9]+"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  verify:
+    name: Verificar versão
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Tag x versão dos crates e do tauri.conf.json
+        if: startsWith(github.ref, 'refs/tags/')
+        run: ./scripts/check-version.sh "${GITHUB_REF_NAME}"
+
+  build-tui:
+    name: TUI estático (musl)
+    needs: verify
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # v1
+        with:
+          toolchain: stable
+          targets: x86_64-unknown-linux-musl
+
+      # Sem musl-tools de propósito: o grafo do TUI é Rust puro, então o
+      # rust-std do musl já basta. Se algum dia entrar um crate com build
+      # script em C (ring, openssl-sys), aí sim será preciso apt musl-tools.
+      - name: Build
+        run: cargo build --release --locked -p rusense-tui --target x86_64-unknown-linux-musl
+
+      - name: Provar que o binário é estático
+        run: |
+          BIN=target/x86_64-unknown-linux-musl/release/rusense
+          file "$BIN"
+          if ldd "$BIN" 2>&1 | grep -qE 'statically linked|not a dynamic executable'; then
+            echo "ok: binário estático"
+          else
+            echo "::error::binário NÃO é estático — não seria portável"
+            ldd "$BIN" 2>&1 || true
+            exit 1
+          fi
+
+      - name: Fumaça — o binário roda?
+        run: ./target/x86_64-unknown-linux-musl/release/rusense --help
+
+      - name: Empacotar
+        id: pack
+        run: |
+          V="${GITHUB_REF_NAME}"
+          case "$V" in v*) : ;; *) V="dev-$(git rev-parse --short HEAD)" ;; esac
+          D="rusense-${V}-x86_64-unknown-linux-musl"
+          mkdir -p "$D/dist"
+          cp target/x86_64-unknown-linux-musl/release/rusense "$D"/
+          cp README.md LICENSE install.sh "$D"/
+          cp -r dist/. "$D/dist"/
+          tar czf "${D}.tar.gz" "$D"
+          sha256sum "${D}.tar.gz" > "${D}.tar.gz.sha256"
+          ls -la "${D}.tar.gz"*
+          echo "name=$D" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: tui
+          path: rusense-*.tar.gz*
+          if-no-files-found: error
+
+  release:
+    name: Publicar draft
+    needs: build-tui
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          path: dist-release
+          merge-multiple: true
+
+      # actions/attest, não attest-build-provenance: este virou wrapper na v4 e
+      # a própria doc recomenda usar attest diretamente em implementações novas.
+      - name: Attestation de proveniência
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-path: dist-release/*.tar.gz
+          predicate-type: https://slsa.dev/provenance/v1
+          predicate: '{}'
+
+      - name: Criar release como DRAFT
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          ls -la dist-release/
+          gh release create "$GITHUB_REF_NAME" \
+            --draft --verify-tag \
+            --title "$GITHUB_REF_NAME" \
+            --generate-notes \
+            dist-release/*
