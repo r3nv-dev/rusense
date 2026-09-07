@@ -1,17 +1,21 @@
-# 99-rusense.rules — RuSense: libera escrita nos controles do driver
-# Linuwu-Sense para o grupo "wheel".
+# 99-rusense.rules — RuSense: grants write access to Linuwu-Sense
+# driver controls for the "wheel" group.
 #
-# Quando o driver carrega (device platform "acer-wmi" aparece), aplica
-# chgrp/chmod nos subdiretórios de controle que existirem neste modelo:
-#   - nitro_sense     (linha Nitro)
-#   - predator_sense  (linha Predator — mesmo layout de atributos)
-#   - platform-profile (perfis low-power/quiet/balanced/...)
+# When the driver loads (platform device "acer-wmi" appears), applies
+# chgrp/chmod to the control subdirectories that exist on this model:
+#   - nitro_sense       (Nitro line)
+#   - predator_sense    (Predator line — same attribute layout)
+#   - platform-profile  (low-power/quiet/balanced/... profiles)
 #
-# Sem esta regra instalada, rusense/rusense-gui funcionam em modo SOMENTE
-# LEITURA — o erro "sem permissão de escrita" do app aponta pro install.sh.
+# Without this rule installed, rusense/rusense-gui runs in READ-ONLY mode —
+# the app's "write permission denied" error points to install.sh.
 #
-# Instalar:    sudo ./install.sh   (copia pra /etc/udev/rules.d/ e recarrega)
-# Desinstalar: sudo rm /etc/udev/rules.d/99-rusense.rules && sudo udevadm control --reload
+# Install:    sudo ./install.sh  # (copies to /etc/udev/rules.d/ and reloads)
+# Uninstall:  sudo rm /etc/udev/rules.d/99-rusense.rules && sudo udevadm control --reload
 #
-# Nota de escape: em regras udev, "$$" vira "$" literal no comando executado.
-ACTION=="add", SUBSYSTEM=="platform", KERNEL=="acer-wmi", RUN+="/bin/sh -c 'for d in /sys/devices/platform/acer-wmi/nitro_sense /sys/devices/platform/acer-wmi/predator_sense /sys/devices/platform/acer-wmi/platform-profile; do [ -d $$d ] && { chgrp -R wheel $$d; chmod -R g+w $$d; }; done; exit 0'"
+# Note: in udev rules, "$$" becomes a literal "$" in the executed command.   
+#
+ACTION=="add", SUBSYSTEM=="platform", KERNEL=="acer-wmi", \
+  RUN+="/bin/sh -c 'for d in /sys$devpath/{nitro_sense,predator_sense,platform-profile}; \
+    do [ -d $$d ] && { chgrp -R wheel $$d; \
+      find $$d -type f -perm /u+w -exec chmod g+w {} +; }; done'"
