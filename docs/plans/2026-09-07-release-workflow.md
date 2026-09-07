@@ -41,7 +41,18 @@ Tudo abaixo foi confirmado empiricamente nesta máquina ou via pesquisa em 2026-
 
 ---
 
-# FASE 1 — TUI estático (baixo risco)
+# FASE 1 — TUI estático ✅ CONCLUÍDA EM 2026-09-07
+
+Publicada como [v0.1.1](https://github.com/r3nv-dev/rusense/releases/tag/v0.1.1).
+Tarball de 475 KB, binário estático musl, attestation verificável.
+
+**Dois desvios em relação ao plano escrito, ambos pegos por teste:**
+
+1. `actions/attest` com `predicate: '{}'` é recusado pelo servidor (`build definition is nil`). Para proveniência o correto é `actions/attest-build-provenance`, que monta o predicate SLSA sozinho. A regra "use attest diretamente" vale para attestations customizadas.
+2. A tag de teste sugerida (`v0.0.1-test`) não casa com o filtro `v[0-9]+.[0-9]+.[0-9]+` e não dispararia nada. Usar `v0.0.1`.
+
+Além disso, `gui/tauri.conf.json` manteve `version` explícita: com `strip = true` não há como inspecionar o binário e provar que a herança do Cargo.toml funcionou, então o gate confere o campo diretamente.
+
 
 ## Task 1: Unificar a versão em uma fonte única
 
