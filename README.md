@@ -34,7 +34,29 @@ rusense-gui --mock    # GUI simulada
 - **Rust** (toolchain stable, via [rustup](https://rustup.rs))
 - Para a GUI: **webkit2gtk-4.1** (Arch: `sudo pacman -S webkit2gtk-4.1`; Ubuntu/Debian: `libwebkit2gtk-4.1-dev` para compilar)
 
-## Instalação / Build
+## Instalação
+
+### Binário pronto (TUI) — sem instalar Rust
+
+```sh
+curl -LO https://github.com/r3nv-dev/rusense/releases/latest/download/rusense-v0.1.1-x86_64-unknown-linux-musl.tar.gz
+tar xzf rusense-v0.1.1-*.tar.gz && cd rusense-v0.1.1-*/
+sudo ./install.sh    # regra udev — sem ela o app fica em modo somente leitura
+./rusense
+```
+
+Binário **estático** (musl): não depende de glibc nem de bibliotecas do sistema —
+roda de Alpine a RHEL 8. Verifique a integridade com o `.sha256` publicado junto,
+ou a proveniência do build com:
+
+```sh
+gh attestation verify rusense-v0.1.1-*.tar.gz --repo r3nv-dev/rusense
+```
+
+A GUI ainda não tem binário pronto (Tauri depende do webkit2gtk do sistema, que
+varia por distro) — para ela, siga o build abaixo.
+
+## Build a partir do código
 
 ```sh
 cargo build --release
